@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { analyzeStreamForTopics } from './lib/gemini';
+import { checkIfLiveDirectly } from './lib/youtube';
 import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -43,6 +44,25 @@ export default function App() {
     secondsUntilNextRef.current = intervalMinutes * 60;
     setSecondsUntilNext(intervalMinutes * 60);
   }, [intervalMinutes]);
+
+  useEffect(() => {
+    if (uplinkStatus !== 'connected') {
+      setIsLive(null);
+      return;
+    }
+
+    const checkLiveStatus = async () => {
+      const live = await checkIfLiveDirectly(streamInput);
+      setIsLive(live);
+    };
+
+    // Check immediately upon connection
+    checkLiveStatus();
+
+    // Then check every 30 seconds
+    const intervalId = setInterval(checkLiveStatus, 30000);
+    return () => clearInterval(intervalId);
+  }, [uplinkStatus, streamInput]);
 
   useEffect(() => {
     if (uplinkStatus !== 'connected' || isPaused) return;
@@ -105,7 +125,6 @@ export default function App() {
     
     try {
       const result = await analyzeStreamForTopics(stateRef.current.streamInput);
-      setIsLive(result.isLive);
       if (result.topics && result.topics.length > 0) {
         setTopicGroups(prev => [
           { id: Date.now().toString(), timestamp: new Date(), elapsedAt: elapsedSecondsRef.current, topics: result.topics },
@@ -153,6 +172,7 @@ export default function App() {
                 <option value={1} className="bg-neutral-900">1 min</option>
                 <option value={3} className="bg-neutral-900">3 mins</option>
                 <option value={5} className="bg-neutral-900">5 mins</option>
+                <option value={10} className="bg-neutral-900">10 mins</option>
               </select>
             </div>
           </div>
@@ -213,19 +233,19 @@ export default function App() {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                   )}
                   <span className={`relative inline-flex rounded-full h-3 w-3 ${
-                    uplinkStatus === 'connected' ? (isLive ? 'bg-green-500' : 'bg-neutral-500') :
+                    uplinkStatus === 'connected' ? 'bg-green-500' :
                     uplinkStatus === 'connecting' ? 'bg-yellow-500' :
                     uplinkStatus === 'error' ? 'bg-red-500' :
                     'bg-white/20'
                   }`}></span>
                 </div>
                 <span className={`text-sm font-medium ${
-                  uplinkStatus === 'connected' ? (isLive ? 'text-green-500' : 'text-neutral-400') :
+                  uplinkStatus === 'connected' ? 'text-green-500' :
                   uplinkStatus === 'connecting' ? 'text-yellow-500' :
                   uplinkStatus === 'error' ? 'text-red-500' :
                   'text-white/50'
                 }`}>
-                  {uplinkStatus === 'connected' ? (isLive ? 'Uplink established (Live)' : 'Uplink established (Offline)') :
+                  {uplinkStatus === 'connected' ? (isLive ? 'Uplink established (Live detected)' : 'Uplink established (Monitoring)') :
                    uplinkStatus === 'connecting' ? 'Establishing uplink...' :
                    uplinkStatus === 'error' ? 'Invalid stream identifier' :
                    'Awaiting connection'}
