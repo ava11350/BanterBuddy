@@ -1,0 +1,5 @@
+{
+  "name": "BanterBuddy",
+  "description": "Livestream analyzer that suggests engaging topics to prevent lulls.",
+  "requestFramePermissions": []
+}
