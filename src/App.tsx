@@ -4,9 +4,9 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { analyzeStreamForTopics } from './lib/gemini';
+import { analyzeStreamForTopics, SuggestionStyle } from './lib/gemini';
 import { checkIfLiveDirectly } from './lib/youtube';
-import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play } from 'lucide-react';
+import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play, Mic, MicOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 type TopicGroup = {
@@ -24,6 +24,9 @@ export default function App() {
   const [topicGroups, setTopicGroups] = useState<TopicGroup[]>([]);
   const [intervalMinutes, setIntervalMinutes] = useState<number>(3);
   const [isPaused, setIsPaused] = useState(false);
+  
+  const [suggestionStyle, setSuggestionStyle] = useState<SuggestionStyle>('balanced');
+  const [isMicEnabled, setIsMicEnabled] = useState(false);
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [sliderValue, setSliderValue] = useState(0);
@@ -31,8 +34,11 @@ export default function App() {
   const secondsUntilNextRef = useRef(intervalMinutes * 60);
   const [isAtLatest, setIsAtLatest] = useState(true);
 
-  const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes });
-  useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes]);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle });
+  useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle]);
 
   const elapsedSecondsRef = useRef(elapsedSeconds);
   useEffect(() => { elapsedSecondsRef.current = elapsedSeconds; }, [elapsedSeconds]);
@@ -44,6 +50,46 @@ export default function App() {
     secondsUntilNextRef.current = intervalMinutes * 60;
     setSecondsUntilNext(intervalMinutes * 60);
   }, [intervalMinutes]);
+
+  useEffect(() => {
+    if (isMicEnabled) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          const mediaRecorder = new MediaRecorder(stream);
+          mediaRecorderRef.current = mediaRecorder;
+          
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+              audioChunksRef.current.push(e.data);
+              // Keep only the last ~60 seconds (assuming 1 second chunks)
+              if (audioChunksRef.current.length > 60) {
+                audioChunksRef.current.shift();
+              }
+            }
+          };
+          
+          mediaRecorder.start(1000); // 1 second chunks
+        })
+        .catch(err => {
+          console.error("Error accessing microphone:", err);
+          setIsMicEnabled(false);
+        });
+    } else {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      }
+      mediaRecorderRef.current = null;
+      audioChunksRef.current = [];
+    }
+    
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [isMicEnabled]);
 
   useEffect(() => {
     if (uplinkStatus !== 'connected') {
@@ -123,8 +169,40 @@ export default function App() {
     secondsUntilNextRef.current = stateRef.current.intervalMinutes * 60;
     setSecondsUntilNext(stateRef.current.intervalMinutes * 60);
     
+    let audioBase64: string | undefined;
+    let audioMimeType: string | undefined;
+
+    if (isMicEnabled && audioChunksRef.current.length > 0) {
+      try {
+        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current?.mimeType || 'audio/webm' });
+        audioMimeType = audioBlob.type;
+        
+        // Convert blob to base64
+        audioBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            if (typeof reader.result === 'string') {
+              const base64data = reader.result.split(',')[1];
+              resolve(base64data);
+            } else {
+              reject(new Error("Failed to read audio blob"));
+            }
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(audioBlob);
+        });
+      } catch (err) {
+        console.error("Failed to process audio for analysis", err);
+      }
+    }
+    
     try {
-      const result = await analyzeStreamForTopics(stateRef.current.streamInput);
+      const result = await analyzeStreamForTopics(
+        stateRef.current.streamInput, 
+        stateRef.current.suggestionStyle,
+        audioBase64,
+        audioMimeType
+      );
       if (result.topics && result.topics.length > 0) {
         setTopicGroups(prev => [
           { id: Date.now().toString(), timestamp: new Date(), elapsedAt: elapsedSecondsRef.current, topics: result.topics },
@@ -233,25 +311,83 @@ export default function App() {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                   )}
                   <span className={`relative inline-flex rounded-full h-3 w-3 ${
-                    uplinkStatus === 'connected' ? 'bg-green-500' :
+                    uplinkStatus === 'connected' ? (isLive ? 'bg-green-500' : 'bg-orange-500') :
                     uplinkStatus === 'connecting' ? 'bg-yellow-500' :
                     uplinkStatus === 'error' ? 'bg-red-500' :
                     'bg-white/20'
                   }`}></span>
                 </div>
                 <span className={`text-sm font-medium ${
-                  uplinkStatus === 'connected' ? 'text-green-500' :
+                  uplinkStatus === 'connected' ? (isLive ? 'text-green-500' : 'text-orange-500') :
                   uplinkStatus === 'connecting' ? 'text-yellow-500' :
                   uplinkStatus === 'error' ? 'text-red-500' :
                   'text-white/50'
                 }`}>
-                  {uplinkStatus === 'connected' ? (isLive ? 'Uplink established (Live detected)' : 'Uplink established (Monitoring)') :
+                  {uplinkStatus === 'connected' ? (isLive ? 'Uplink established (Live detected)' : 'Uplink established (Offline / Monitoring)') :
                    uplinkStatus === 'connecting' ? 'Establishing uplink...' :
                    uplinkStatus === 'error' ? 'Invalid stream identifier' :
                    'Awaiting connection'}
                 </span>
               </div>
             </div>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+            <h2 className="text-sm font-medium text-white/50 uppercase tracking-wider mb-4">Suggestion Style</h2>
+            <div className="flex flex-col gap-3">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'personalized' ? 'border-purple-500 bg-purple-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
+                  {suggestionStyle === 'personalized' && <div className="w-2.5 h-2.5 rounded-full bg-purple-500" />}
+                </div>
+                <input type="radio" className="hidden" checked={suggestionStyle === 'personalized'} onChange={() => setSuggestionStyle('personalized')} />
+                <div>
+                  <div className="text-sm font-medium text-white/90">Personalized</div>
+                  <div className="text-xs text-white/50">Draws directly from background and ongoing conversation</div>
+                </div>
+              </label>
+              
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'balanced' ? 'border-purple-500 bg-purple-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
+                  {suggestionStyle === 'balanced' && <div className="w-2.5 h-2.5 rounded-full bg-purple-500" />}
+                </div>
+                <input type="radio" className="hidden" checked={suggestionStyle === 'balanced'} onChange={() => setSuggestionStyle('balanced')} />
+                <div>
+                  <div className="text-sm font-medium text-white/90">Balanced</div>
+                  <div className="text-xs text-white/50">Hybrid of personalized and abstract topics</div>
+                </div>
+              </label>
+
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'abstract' ? 'border-purple-500 bg-purple-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
+                  {suggestionStyle === 'abstract' && <div className="w-2.5 h-2.5 rounded-full bg-purple-500" />}
+                </div>
+                <input type="radio" className="hidden" checked={suggestionStyle === 'abstract'} onChange={() => setSuggestionStyle('abstract')} />
+                <div>
+                  <div className="text-sm font-medium text-white/90">Abstract</div>
+                  <div className="text-xs text-white/50">Helps change the topic and start new dialogues</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-sm font-medium text-white/50 uppercase tracking-wider">Audio Context</h2>
+              <button
+                onClick={() => setIsMicEnabled(!isMicEnabled)}
+                className={`p-2 rounded-lg transition-colors ${
+                  isMicEnabled ? 'bg-red-500/20 text-red-500 hover:bg-red-500/30' : 'bg-white/10 text-white/70 hover:text-white hover:bg-white/20'
+                }`}
+                title={isMicEnabled ? "Disable Microphone" : "Enable Microphone"}
+              >
+                {isMicEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-xs text-white/50 leading-relaxed">
+              {isMicEnabled 
+                ? "Listening to stream audio to provide immediate conversational context for suggestions." 
+                : "Enable microphone to allow BanterBuddy to listen to your stream and provide more relevant suggestions."}
+            </p>
           </div>
 
           <div className="bg-white/5 border border-white/10 rounded-2xl p-6">

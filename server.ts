@@ -48,15 +48,13 @@ async function startServer() {
       
       const html = await response.text();
       
-      // YouTube's /live URL redirects to the live video if they are live.
-      // The canonical URL will be /watch?v=...
-      const canonicalMatch = html.match(/<link rel="canonical" href="([^"]+)"/);
-      if (canonicalMatch && canonicalMatch[1].includes('/watch?v=')) {
-        return res.json({ isLive: true });
-      }
+      // The most reliable indicator of a currently active live stream on a YouTube watch page.
+      // Past broadcasts (VODs) and channel pages will not have this set to true for the main video.
+      // We check for both standard and escaped JSON formats.
+      const isLiveNow = html.includes('"isLiveNow":true') || 
+                        html.includes('\\"isLiveNow\\":true');
       
-      // Fallback check for live indicators in the page source
-      if (html.includes('"isLiveNow":true') || html.includes('{"text":"LIVE"}')) {
+      if (isLiveNow) {
         return res.json({ isLive: true });
       }
       
