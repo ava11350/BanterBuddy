@@ -35,24 +35,32 @@ async function startServer() {
 
       const targetUrl = `https://www.youtube.com/${channelPath}/live`;
       
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
       const response = await fetch(targetUrl, {
+        signal: controller.signal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept-Language': 'en-US,en;q=0.9',
         }
       });
       
+      clearTimeout(timeoutId);
+      
       if (!response.ok) {
+        // CRITICAL: Consume the response body even on error to prevent Node.js memory leaks
+        await response.text().catch(() => {});
         return res.json({ isLive: false });
       }
       
       const html = await response.text();
       
-      // The most reliable indicator of a currently active live stream on a YouTube watch page.
-      // Past broadcasts (VODs) and channel pages will not have this set to true for the main video.
-      // We check for both standard and escaped JSON formats.
+      // The most reliable indicators of a currently active live stream on a YouTube watch page.
+      // We check for isLiveNow, hlsManifestUrl (which only exists for active streams), and isLiveContent.
       const isLiveNow = html.includes('"isLiveNow":true') || 
-                        html.includes('\\"isLiveNow\\":true');
+                        html.includes('\\"isLiveNow\\":true') ||
+                        (html.includes('hlsManifestUrl') && html.includes('"isLiveContent":true'));
       
       if (isLiveNow) {
         return res.json({ isLive: true });

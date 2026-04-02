@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { analyzeStreamForTopics, SuggestionStyle } from './lib/gemini';
+import { StreamAnalyzerSession, SuggestionStyle } from './lib/gemini';
 import { checkIfLiveDirectly } from './lib/youtube';
 import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play, Mic, MicOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -27,6 +27,8 @@ export default function App() {
   
   const [suggestionStyle, setSuggestionStyle] = useState<SuggestionStyle>('balanced');
   const [isMicEnabled, setIsMicEnabled] = useState(false);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('default');
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [sliderValue, setSliderValue] = useState(0);
@@ -36,6 +38,7 @@ export default function App() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const analyzerRef = useRef<StreamAnalyzerSession | null>(null);
 
   const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle });
   useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle]);
@@ -52,9 +55,23 @@ export default function App() {
   }, [intervalMinutes]);
 
   useEffect(() => {
+    let active = true;
     if (isMicEnabled) {
-      navigator.mediaDevices.getUserMedia({ audio: true })
+      const constraints: MediaStreamConstraints = { 
+        audio: {
+          deviceId: selectedDeviceId !== 'default' ? { exact: selectedDeviceId } : undefined,
+          autoGainControl: false,
+          echoCancellation: false,
+          noiseSuppression: false
+        } 
+      };
+
+      navigator.mediaDevices.getUserMedia(constraints)
         .then(stream => {
+          if (!active) {
+            stream.getTracks().forEach(track => track.stop());
+            return;
+          }
           const mediaRecorder = new MediaRecorder(stream);
           mediaRecorderRef.current = mediaRecorder;
           
@@ -69,6 +86,13 @@ export default function App() {
           };
           
           mediaRecorder.start(1000); // 1 second chunks
+
+          // Fetch devices now that we have permission
+          navigator.mediaDevices.enumerateDevices().then(devices => {
+            if (active) {
+              setAudioDevices(devices.filter(d => d.kind === 'audioinput'));
+            }
+          });
         })
         .catch(err => {
           console.error("Error accessing microphone:", err);
@@ -84,12 +108,13 @@ export default function App() {
     }
     
     return () => {
+      active = false;
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
         mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
       }
     };
-  }, [isMicEnabled]);
+  }, [isMicEnabled, selectedDeviceId]);
 
   useEffect(() => {
     if (uplinkStatus !== 'connected') {
@@ -140,22 +165,29 @@ export default function App() {
     if (uplinkStatus === 'connected') {
       setUplinkStatus('disconnected');
       setIsPaused(true);
+      analyzerRef.current = null;
       return;
     }
 
     setUplinkStatus('connecting');
     
-    // Simulate connection validation delay for UX
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
     // Basic validation: check if it looks like a URL or a username
     const isValid = streamInput.includes('youtube.com') || streamInput.includes('youtu.be') || streamInput.startsWith('@');
     
     if (isValid) {
-      setUplinkStatus('connected');
-      stateRef.current.uplinkStatus = 'connected';
-      setIsPaused(false);
-      triggerAnalysis(); // Initial analysis
+      try {
+        const analyzer = new StreamAnalyzerSession(streamInput);
+        await analyzer.initialize();
+        analyzerRef.current = analyzer;
+
+        setUplinkStatus('connected');
+        stateRef.current.uplinkStatus = 'connected';
+        setIsPaused(false);
+        triggerAnalysis(); // Initial analysis
+      } catch (error) {
+        console.error("Failed to initialize analyzer session", error);
+        setUplinkStatus('error');
+      }
     } else {
       setUplinkStatus('error');
     }
@@ -163,6 +195,7 @@ export default function App() {
 
   const triggerAnalysis = async () => {
     if (stateRef.current.isAnalyzing || stateRef.current.uplinkStatus !== 'connected') return;
+    if (!analyzerRef.current) return;
     
     setIsAnalyzing(true);
     stateRef.current.isAnalyzing = true;
@@ -197,8 +230,7 @@ export default function App() {
     }
     
     try {
-      const result = await analyzeStreamForTopics(
-        stateRef.current.streamInput, 
+      const result = await analyzerRef.current.getTopics(
         stateRef.current.suggestionStyle,
         audioBase64,
         audioMimeType
@@ -388,6 +420,24 @@ export default function App() {
                 ? "Listening to stream audio to provide immediate conversational context for suggestions." 
                 : "Enable microphone to allow BanterBuddy to listen to your stream and provide more relevant suggestions."}
             </p>
+
+            {isMicEnabled && audioDevices.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-white/10">
+                <label className="block text-xs text-white/50 mb-2">Audio Input Device</label>
+                <select 
+                  value={selectedDeviceId}
+                  onChange={(e) => setSelectedDeviceId(e.target.value)}
+                  className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                >
+                  <option value="default">Default System Device</option>
+                  {audioDevices.map(device => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label || `Microphone ${device.deviceId.slice(0, 5)}...`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
