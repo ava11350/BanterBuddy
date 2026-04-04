@@ -40,8 +40,8 @@ export default function App() {
   const audioChunksRef = useRef<Blob[]>([]);
   const analyzerRef = useRef<StreamAnalyzerSession | null>(null);
 
-  const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle });
-  useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle]);
+  const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled });
+  useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled]);
 
   const elapsedSecondsRef = useRef(elapsedSeconds);
   useEffect(() => { elapsedSecondsRef.current = elapsedSeconds; }, [elapsedSeconds]);
@@ -77,10 +77,15 @@ export default function App() {
           
           mediaRecorder.ondataavailable = (e) => {
             if (e.data.size > 0) {
-              audioChunksRef.current.push(e.data);
-              // Keep only the last ~60 seconds (assuming 1 second chunks)
-              if (audioChunksRef.current.length > 60) {
-                audioChunksRef.current.shift();
+              if (audioChunksRef.current.length === 0) {
+                // Preserve the initialization chunk (header) at index 0
+                audioChunksRef.current.push(e.data);
+              } else {
+                audioChunksRef.current.push(e.data);
+                // Keep header at index 0, plus the last ~60 seconds of audio
+                if (audioChunksRef.current.length > 61) {
+                  audioChunksRef.current.splice(1, 1);
+                }
               }
             }
           };
@@ -205,7 +210,7 @@ export default function App() {
     let audioBase64: string | undefined;
     let audioMimeType: string | undefined;
 
-    if (isMicEnabled && audioChunksRef.current.length > 0) {
+    if (stateRef.current.isMicEnabled && audioChunksRef.current.length > 0) {
       try {
         const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current?.mimeType || 'audio/webm' });
         audioMimeType = audioBlob.type;

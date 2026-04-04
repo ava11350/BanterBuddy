@@ -58,10 +58,11 @@ Return JSON with 'topics' (array of strings).`;
 
     const newParts: any[] = [{ text: promptText }];
     if (audioBase64 && audioMimeType) {
+      const cleanMimeType = audioMimeType.split(';')[0];
       newParts.push({
         inlineData: {
           data: audioBase64,
-          mimeType: audioMimeType
+          mimeType: cleanMimeType
         }
       });
     }
@@ -87,7 +88,8 @@ Return JSON with 'topics' (array of strings).`;
       }
     });
 
-    this.history.push(newUserContent);
+    // Add to history WITHOUT the audio to save context window and prevent confusion
+    this.history.push({ role: 'user', parts: [{ text: promptText }] });
     if (response.candidates?.[0]?.content) {
       this.history.push(response.candidates[0].content);
     }
