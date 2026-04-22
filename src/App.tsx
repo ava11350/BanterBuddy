@@ -38,6 +38,8 @@ export default function App() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const transcriptRef = useRef<string>("");
+  const speechRecognitionRef = useRef<any>(null);
   const analyzerRef = useRef<StreamAnalyzerSession | null>(null);
 
   const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled });
@@ -92,6 +94,43 @@ export default function App() {
           
           mediaRecorder.start(1000); // 1 second chunks
 
+          // Speech Recognition Setup
+          const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+          if (SpeechRecognition) {
+            try {
+              const recognition = new SpeechRecognition();
+              recognition.continuous = true;
+              recognition.interimResults = true;
+
+              recognition.onresult = (event: any) => {
+                let currentFinal = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                  if (event.results[i].isFinal) {
+                    currentFinal += event.results[i][0].transcript + ' ';
+                  }
+                }
+                if (currentFinal) {
+                  transcriptRef.current += currentFinal;
+                }
+              };
+
+              recognition.onerror = (event: any) => {
+                console.error("Speech recognition error:", event.error);
+              };
+
+              recognition.onend = () => {
+                if (active && isMicEnabled) {
+                  try { recognition.start(); } catch (e) {}
+                }
+              };
+
+              recognition.start();
+              speechRecognitionRef.current = recognition;
+            } catch (err) {
+              console.error("Failed to initialize speech recognition:", err);
+            }
+          }
+
           // Fetch devices now that we have permission
           navigator.mediaDevices.enumerateDevices().then(devices => {
             if (active) {
@@ -110,6 +149,11 @@ export default function App() {
       }
       mediaRecorderRef.current = null;
       audioChunksRef.current = [];
+
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
+        speechRecognitionRef.current = null;
+      }
     }
     
     return () => {
@@ -117,6 +161,10 @@ export default function App() {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
         mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      }
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
+        speechRecognitionRef.current = null;
       }
     };
   }, [isMicEnabled, selectedDeviceId]);
@@ -234,9 +282,13 @@ export default function App() {
       }
     }
     
+    let accumulatedTranscript = transcriptRef.current;
+    transcriptRef.current = ""; // Clear for the next period
+
     try {
       const result = await analyzerRef.current.getTopics(
         stateRef.current.suggestionStyle,
+        accumulatedTranscript,
         audioBase64,
         audioMimeType
       );

@@ -34,27 +34,33 @@ First, use Google Search to find the most recent information, tweets, community 
     }
   }
 
-  async getTopics(style: SuggestionStyle, audioBase64?: string, audioMimeType?: string): Promise<{topics: string[]}> {
+  async getTopics(style: SuggestionStyle, transcript: string, audioBase64?: string, audioMimeType?: string): Promise<{summary?: string, topics: string[]}> {
     let styleInstruction = "";
     if (style === 'personalized') {
-      styleInstruction = "Suggest topics which directly draw from the user's background, niche, and the ongoing conversation.";
+      styleInstruction = "Highly relevant to the current conversation or the creator's specific niche.";
     } else if (style === 'balanced') {
-      styleInstruction = "Hybridize personalized and abstract. Suggestions should not be as directly focused on the immediate conversation but still maintain relevancy via personalization and general interests.";
+      styleInstruction = "A mix of natural follow-ups to the current topic and broader channel-related themes.";
     } else if (style === 'abstract') {
-      styleInstruction = "Help change the topic and start new dialogues. Topics should be related to the creator's general interests but less derived from the ongoing conversation. Introduce creative or wildcard scenarios.";
+      styleInstruction = "Fun pivots, new tangents, or broader questions to completely refresh the conversation.";
     }
 
-    const promptText = `Based on your established profile of the creator, please suggest 3 extremely brief discussion seeds or talking points.
+    const transcriptInfo = transcript.trim() ? `Browser background transcript (may contain errors, use to understand broader context between audio clips): "${transcript}"` : "No background transcript available.";
+
+    const promptText = `You are a live stream producer helping a creator avoid "dead air". Based on their profile and the current stream context, suggest 3 punchy, easy-to-read talking points to keep the broadcast moving.
     
-${audioBase64 ? "I have provided an audio recording of the recent stream discussion. Listen to this audio to understand the immediate conversational context." : "No recent audio is available, rely on the creator's general profile."}
+Context given:
+${transcriptInfo}
+
+${audioBase64 ? "I have also provided the most recent high-quality 60-second audio clip. YOU MUST HEAVILY WEIGHT THIS AUDIO CLIP OVER THE TRANSCRIPT. Rely on the audio for accurate tone, energy, and the immediate context since the transcript may have errors or lack nuance. First, provide a 1-sentence 'summary' of the ongoing conversation to maintain continuity in our history. Then, suggest natural follow-ups, new angles, or pivot topics." : "No recent audio available. Leave the 'summary' empty and suggest engaging topics based on their general profile and transcript."}
 
 CRITICAL REQUIREMENTS:
-1. Style: ${styleInstruction}
-2. Format: Provide open-ended concepts or talking points, NOT direct questions. (e.g., use "The new meta shift" instead of "What do you think about the new meta?")
-3. Brevity: Maximum of 10 words per topic. They must be easy to glance at and naturally work into a flowing conversation.
-4. High Variance: Do not repeat standard topics. Introduce wildcards, hot takes, or unusual angles.
+1. Goal: Cure "dead air". The suggestions must be instantly readable and spark immediate thoughts.
+2. Format: Use punchy phrases, bold statements, or engaging questions. (e.g., "Thoughts on the new Zelda leaks?", "Story time: your worst gaming moment", "Hot take on the current meta").
+3. Brevity: Keep it under 8-10 words. It must be readable in a split-second glance.
+4. Style: ${styleInstruction}
+5. No Echoing: Don't just summarize what they just said in the topics. Give them the *next* thing to talk about.
 
-Return JSON with 'topics' (array of strings).`;
+Return JSON with 'summary' (string) and 'topics' (array of strings).`;
 
     const newParts: any[] = [{ text: promptText }];
     if (audioBase64 && audioMimeType) {
@@ -78,12 +84,13 @@ Return JSON with 'topics' (array of strings).`;
         responseSchema: {
           type: Type.OBJECT,
           properties: {
+            summary: { type: Type.STRING },
             topics: {
               type: Type.ARRAY,
               items: { type: Type.STRING }
             }
           },
-          required: ["topics"]
+          required: ["summary", "topics"]
         }
       }
     });
