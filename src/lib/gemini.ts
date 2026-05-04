@@ -8,11 +8,17 @@ export class StreamAnalyzerSession {
   private history: any[] = [];
   private streamIdentifier: string;
 
-  constructor(streamIdentifier: string) {
+  constructor(streamIdentifier: string, existingHistory: any[] = []) {
     this.streamIdentifier = streamIdentifier;
+    this.history = existingHistory;
+  }
+
+  getHistory() {
+    return this.history;
   }
 
   async initialize() {
+    if (this.history.length > 0) return; // Skip initialization if we recovered history
     const prompt = `You are an AI co-host for a livestreamer. The current livestream identifier/URL is: ${this.streamIdentifier}. The current time is ${new Date().toISOString()}. 
     
 First, use Google Search to find the most recent information, tweets, community updates, or news about this creator or stream to understand their background, niche, and CURRENT context. Build a comprehensive internal profile of this creator. You do not need to output the profile to me, just acknowledge that you have researched them and are ready to provide talking points.`;

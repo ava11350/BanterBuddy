@@ -6,7 +6,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { StreamAnalyzerSession, SuggestionStyle } from './lib/gemini';
 import { checkIfLiveDirectly } from './lib/youtube';
-import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play, Mic, MicOff } from 'lucide-react';
+import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play, Mic, MicOff, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 type TopicGroup = {
@@ -17,20 +17,42 @@ type TopicGroup = {
 };
 
 export default function App() {
-  const [streamInput, setStreamInput] = useState('');
+  const [streamInput, setStreamInput] = useState(() => localStorage.getItem('banterBuddy_streamInput') || '');
   const [uplinkStatus, setUplinkStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [isLive, setIsLive] = useState<boolean | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [topicGroups, setTopicGroups] = useState<TopicGroup[]>([]);
-  const [intervalMinutes, setIntervalMinutes] = useState<number>(3);
+  const [topicGroups, setTopicGroups] = useState<TopicGroup[]>(() => {
+    try {
+      const saved = localStorage.getItem('banterBuddy_topicGroups');
+      if (saved) {
+        return JSON.parse(saved).map((g: any) => ({ ...g, timestamp: new Date(g.timestamp) }));
+      }
+    } catch (e) {}
+    return [];
+  });
+  const [aiHistory, setAiHistory] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('banterBuddy_aiHistory');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {}
+    return [];
+  });
+  const hasSavedSession = topicGroups.length > 0 || aiHistory.length > 0;
+  const [confirmTerminate, setConfirmTerminate] = useState(false);
+  const [intervalMinutes, setIntervalMinutes] = useState<number>(() => {
+    const saved = localStorage.getItem('banterBuddy_intervalMinutes');
+    return saved ? Number(saved) : 3;
+  });
   const [isPaused, setIsPaused] = useState(false);
   
-  const [suggestionStyle, setSuggestionStyle] = useState<SuggestionStyle>('balanced');
+  const [suggestionStyle, setSuggestionStyle] = useState<SuggestionStyle>(() => {
+    return (localStorage.getItem('banterBuddy_suggestionStyle') as SuggestionStyle) || 'balanced';
+  });
   const [isMicEnabled, setIsMicEnabled] = useState(false);
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('default');
 
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(() => Number(localStorage.getItem('banterBuddy_elapsedSeconds')) || 0);
   const [sliderValue, setSliderValue] = useState(0);
   const [secondsUntilNext, setSecondsUntilNext] = useState(intervalMinutes * 60);
   const secondsUntilNextRef = useRef(intervalMinutes * 60);
@@ -41,6 +63,14 @@ export default function App() {
   const transcriptRef = useRef<string>("");
   const speechRecognitionRef = useRef<any>(null);
   const analyzerRef = useRef<StreamAnalyzerSession | null>(null);
+
+  // Persistence Effects
+  useEffect(() => { localStorage.setItem('banterBuddy_streamInput', streamInput); }, [streamInput]);
+  useEffect(() => { localStorage.setItem('banterBuddy_topicGroups', JSON.stringify(topicGroups)); }, [topicGroups]);
+  useEffect(() => { localStorage.setItem('banterBuddy_aiHistory', JSON.stringify(aiHistory)); }, [aiHistory]);
+  useEffect(() => { localStorage.setItem('banterBuddy_intervalMinutes', intervalMinutes.toString()); }, [intervalMinutes]);
+  useEffect(() => { localStorage.setItem('banterBuddy_suggestionStyle', suggestionStyle); }, [suggestionStyle]);
+  useEffect(() => { localStorage.setItem('banterBuddy_elapsedSeconds', elapsedSeconds.toString()); }, [elapsedSeconds]);
 
   const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled });
   useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled]);
@@ -212,26 +242,26 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [uplinkStatus, isPaused, intervalMinutes]);
 
-  const handleConnect = async () => {
-    if (!streamInput.trim()) return;
+  const handleConnectNew = async () => {
+    if (!streamInput.trim() || uplinkStatus === 'connecting') return;
     
-    if (uplinkStatus === 'connected') {
-      setUplinkStatus('disconnected');
-      setIsPaused(true);
-      analyzerRef.current = null;
-      return;
-    }
-
     setUplinkStatus('connecting');
-    
-    // Basic validation: check if it looks like a URL or a username
     const isValid = streamInput.includes('youtube.com') || streamInput.includes('youtu.be') || streamInput.startsWith('@');
     
     if (isValid) {
       try {
+        setTopicGroups([]);
+        setElapsedSeconds(0);
+        setSliderValue(0);
+        setAiHistory([]);
+        localStorage.removeItem('banterBuddy_topicGroups');
+        localStorage.removeItem('banterBuddy_elapsedSeconds');
+        localStorage.removeItem('banterBuddy_aiHistory');
+
         const analyzer = new StreamAnalyzerSession(streamInput);
         await analyzer.initialize();
         analyzerRef.current = analyzer;
+        setAiHistory(analyzer.getHistory());
 
         setUplinkStatus('connected');
         stateRef.current.uplinkStatus = 'connected';
@@ -244,6 +274,36 @@ export default function App() {
     } else {
       setUplinkStatus('error');
     }
+  };
+
+  const handleConnectRecover = async () => {
+    if (!streamInput.trim() || uplinkStatus === 'connecting') return;
+    
+    setUplinkStatus('connecting');
+    const isValid = streamInput.includes('youtube.com') || streamInput.includes('youtu.be') || streamInput.startsWith('@');
+    
+    if (isValid) {
+      try {
+        const analyzer = new StreamAnalyzerSession(streamInput, aiHistory);
+        await analyzer.initialize(); // Skips because history has length
+        analyzerRef.current = analyzer;
+
+        setUplinkStatus('connected');
+        stateRef.current.uplinkStatus = 'connected';
+        setIsPaused(false);
+      } catch (error) {
+        console.error("Failed to recover analyzer session", error);
+        setUplinkStatus('error');
+      }
+    } else {
+      setUplinkStatus('error');
+    }
+  };
+
+  const handleDisconnect = () => {
+    setUplinkStatus('disconnected');
+    setIsPaused(true);
+    analyzerRef.current = null;
   };
 
   const triggerAnalysis = async () => {
@@ -292,6 +352,7 @@ export default function App() {
         audioBase64,
         audioMimeType
       );
+      setAiHistory(analyzerRef.current.getHistory());
       if (result.topics && result.topics.length > 0) {
         setTopicGroups(prev => [
           { id: Date.now().toString(), timestamp: new Date(), elapsedAt: elapsedSecondsRef.current, topics: result.topics },
@@ -355,7 +416,10 @@ export default function App() {
             <div className="space-y-4 mb-6">
               <div>
                 <label className="block text-xs text-white/50 mb-2">YouTube URL or @username</label>
-                <div className="relative">
+                <div 
+                  className="relative group block"
+                  onMouseLeave={() => setConfirmTerminate(false)}
+                >
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                     <LinkIcon className="h-4 w-4 text-white/40" />
                   </div>
@@ -366,30 +430,80 @@ export default function App() {
                       setStreamInput(e.target.value);
                       if (uplinkStatus === 'error') setUplinkStatus('disconnected');
                     }}
+                    readOnly={hasSavedSession || uplinkStatus === 'connected' || uplinkStatus === 'connecting'}
                     disabled={uplinkStatus === 'connected' || uplinkStatus === 'connecting'}
                     placeholder="e.g., @ava11350 or https://youtube.com/..."
-                    className="block w-full pl-10 pr-3 py-2.5 border border-white/10 rounded-xl bg-black/50 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-transparent disabled:opacity-50 transition-all"
+                    className={`block w-full pl-10 pr-3 py-2.5 border border-white/10 rounded-xl bg-black/50 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-transparent transition-all ${
+                      hasSavedSession ? 'cursor-default opacity-80' : ''
+                    } disabled:opacity-50`}
                   />
+                  
+                  {hasSavedSession && (
+                    <div className="absolute inset-0 bg-red-500/65 backdrop-blur-[1px] rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 z-10 cursor-pointer"
+                         onClick={(e) => {
+                           e.preventDefault();
+                           if (confirmTerminate) {
+                             handleDisconnect();
+                             setStreamInput('');
+                             setTopicGroups([]);
+                             setElapsedSeconds(0);
+                             setSliderValue(0);
+                             setAiHistory([]);
+                             localStorage.removeItem('banterBuddy_streamInput');
+                             localStorage.removeItem('banterBuddy_topicGroups');
+                             localStorage.removeItem('banterBuddy_elapsedSeconds');
+                             localStorage.removeItem('banterBuddy_aiHistory');
+                             setConfirmTerminate(false);
+                           } else {
+                             setConfirmTerminate(true);
+                           }
+                         }}
+                    >
+                      <div className="flex items-center gap-2 text-white font-medium select-none">
+                        {confirmTerminate ? (
+                          <span>Confirm Termination</span>
+                        ) : (
+                          <span>Terminate Uplink</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <button
-                onClick={handleConnect}
-                disabled={!streamInput.trim() || uplinkStatus === 'connecting'}
-                className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium transition-all ${
-                  uplinkStatus === 'connected'
-                    ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20'
-                    : 'bg-white text-black hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed'
-                }`}
-              >
-                {uplinkStatus === 'connecting' ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> Connecting...</>
-                ) : uplinkStatus === 'connected' ? (
-                  'Disconnect'
+              <div className="flex flex-col gap-2">
+                {uplinkStatus === 'connected' ? (
+                  <button
+                    onClick={handleDisconnect}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium transition-all bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20"
+                  >
+                    Disconnect
+                  </button>
                 ) : (
-                  'Establish Uplink'
+                  <>
+                    <button
+                      onClick={handleConnectNew}
+                      disabled={!streamInput.trim() || uplinkStatus === 'connecting'}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium transition-all bg-white text-black hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {uplinkStatus === 'connecting' ? (
+                        <><Loader2 className="w-4 h-4 animate-spin" /> Connecting...</>
+                      ) : (
+                        topicGroups.length > 0 ? 'Establish New Uplink' : 'Establish Uplink'
+                      )}
+                    </button>
+                    {(topicGroups.length > 0 || aiHistory.length > 0) && uplinkStatus !== 'connecting' && (
+                      <button
+                        onClick={handleConnectRecover}
+                        disabled={!streamInput.trim()}
+                        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium transition-all bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 border border-purple-500/20"
+                      >
+                        Recover Previous Uplink
+                      </button>
+                    )}
+                  </>
                 )}
-              </button>
+              </div>
             </div>
 
             {/* Status Indicator */}
@@ -496,8 +610,11 @@ export default function App() {
               </div>
             )}
           </div>
+        </div>
 
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+        {/* Right Column: Topics Feed */}
+        <div className="lg:col-span-8">
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-8">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-sm font-medium text-white/50 uppercase tracking-wider">Analysis Timer</h2>
               <button
@@ -534,10 +651,7 @@ export default function App() {
               {isAnalyzing ? 'Analyzing Stream...' : 'Suggest Topics Now'}
             </button>
           </div>
-        </div>
 
-        {/* Right Column: Topics Feed */}
-        <div className="lg:col-span-8">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <Activity className="w-5 h-5 text-purple-500" />
