@@ -9,6 +9,21 @@ import { checkIfLiveDirectly } from './lib/youtube';
 import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play, Mic, MicOff, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+// Polyfill btoa for UTF-8 characters if any library (like GenAI SDK) attempts to encode transcripts
+// containing smart quotes, emojis, or international characters, which natively throws 
+// "The string did not match the expected pattern" (InvalidCharacterError).
+if (typeof window !== 'undefined') {
+  const originalBtoa = window.btoa;
+  window.btoa = function(str: string) {
+    try {
+      return originalBtoa(str);
+    } catch (e) {
+      // unescape + encodeURIComponent converts UTF-8 strings into Latin1 byte sequences
+      return originalBtoa(unescape(encodeURIComponent(str)));
+    }
+  };
+}
+
 type TopicGroup = {
   id: string;
   timestamp: Date;
@@ -17,7 +32,25 @@ type TopicGroup = {
 };
 
 export default function App() {
-  const [streamInput, setStreamInput] = useState(() => localStorage.getItem('banterBuddy_streamInput') || '');
+  const [streamInput, setStreamInput] = useState(() => {
+    let saved = localStorage.getItem('banterBuddy_streamInput');
+    if (!saved) {
+      // Fallback: Recover from aiHistory if available but streamInput was lost
+      try {
+        const historyStr = localStorage.getItem('banterBuddy_aiHistory');
+        if (historyStr) {
+          const h = JSON.parse(historyStr);
+          if (h.length > 0 && h[0].parts?.[0]?.text) {
+            const match = h[0].parts[0].text.match(/identifier\/URL is:\s*([^.\s]+(?:.[^.\s]+)*)/);
+            if (match && match[1]) {
+              saved = match[1];
+            }
+          }
+        }
+      } catch (e) {}
+    }
+    return saved || '';
+  });
   const [uplinkStatus, setUplinkStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [isLive, setIsLive] = useState<boolean | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
