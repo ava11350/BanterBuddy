@@ -33,23 +33,26 @@ type TopicGroup = {
 
 export default function App() {
   const [streamInput, setStreamInput] = useState(() => {
-    let saved = localStorage.getItem('banterBuddy_streamInput');
-    if (!saved) {
-      // Fallback: Recover from aiHistory if available but streamInput was lost
-      try {
-        const historyStr = localStorage.getItem('banterBuddy_aiHistory');
-        if (historyStr) {
-          const h = JSON.parse(historyStr);
-          if (h.length > 0 && h[0].parts?.[0]?.text) {
-            const match = h[0].parts[0].text.match(/identifier\/URL is:\s*([^.\s]+(?:.[^.\s]+)*)/);
-            if (match && match[1]) {
-              saved = match[1];
-            }
+    const lastInUse = localStorage.getItem('banterBuddy_lastIdentifier');
+    if (lastInUse) return lastInUse;
+
+    const saved = localStorage.getItem('banterBuddy_streamInput');
+    if (saved) return saved;
+    
+    // Fallback: Recover from aiHistory if available but streamInput was lost
+    try {
+      const historyStr = localStorage.getItem('banterBuddy_aiHistory');
+      if (historyStr) {
+        const h = JSON.parse(historyStr);
+        if (h.length > 0 && h[0].parts?.[0]?.text) {
+          const match = h[0].parts[0].text.match(/identifier\/URL is:\s*(.*?)\.\s*The current time is/);
+          if (match && match[1]) {
+            return match[1];
           }
         }
-      } catch (e) {}
-    }
-    return saved || '';
+      }
+    } catch (e) {}
+    return '';
   });
   const [uplinkStatus, setUplinkStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [isLive, setIsLive] = useState<boolean | null>(null);
@@ -98,7 +101,11 @@ export default function App() {
   const analyzerRef = useRef<StreamAnalyzerSession | null>(null);
 
   // Persistence Effects
-  useEffect(() => { localStorage.setItem('banterBuddy_streamInput', streamInput); }, [streamInput]);
+  useEffect(() => { 
+    if (streamInput.trim()) {
+      localStorage.setItem('banterBuddy_streamInput', streamInput); 
+    }
+  }, [streamInput]);
   useEffect(() => { localStorage.setItem('banterBuddy_topicGroups', JSON.stringify(topicGroups)); }, [topicGroups]);
   useEffect(() => { localStorage.setItem('banterBuddy_aiHistory', JSON.stringify(aiHistory)); }, [aiHistory]);
   useEffect(() => { localStorage.setItem('banterBuddy_intervalMinutes', intervalMinutes.toString()); }, [intervalMinutes]);
@@ -178,7 +185,17 @@ export default function App() {
               };
 
               recognition.onerror = (event: any) => {
+                if (event.error === 'no-speech') {
+                  // Silent restart is naturally handled by onend
+                  return;
+                }
                 console.error("Speech recognition error:", event.error);
+                if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                  // Stop trying to use SpeechRecognition if it's blocked by the browser.
+                  if (speechRecognitionRef.current) {
+                    speechRecognitionRef.current.onend = null; // Prevent restart
+                  }
+                }
               };
 
               recognition.onend = () => {
@@ -295,6 +312,7 @@ export default function App() {
         await analyzer.initialize();
         analyzerRef.current = analyzer;
         setAiHistory(analyzer.getHistory());
+        localStorage.setItem('banterBuddy_lastIdentifier', streamInput);
 
         setUplinkStatus('connected');
         stateRef.current.uplinkStatus = 'connected';
@@ -320,6 +338,7 @@ export default function App() {
         const analyzer = new StreamAnalyzerSession(streamInput, aiHistory);
         await analyzer.initialize(); // Skips because history has length
         analyzerRef.current = analyzer;
+        localStorage.setItem('banterBuddy_lastIdentifier', streamInput);
 
         setUplinkStatus('connected');
         stateRef.current.uplinkStatus = 'connected';
@@ -463,15 +482,15 @@ export default function App() {
                       setStreamInput(e.target.value);
                       if (uplinkStatus === 'error') setUplinkStatus('disconnected');
                     }}
-                    readOnly={hasSavedSession || uplinkStatus === 'connected' || uplinkStatus === 'connecting'}
+                    readOnly={(hasSavedSession && streamInput.trim().length > 0) || uplinkStatus === 'connected' || uplinkStatus === 'connecting'}
                     disabled={uplinkStatus === 'connected' || uplinkStatus === 'connecting'}
                     placeholder="e.g., @ava11350 or https://youtube.com/..."
                     className={`block w-full pl-10 pr-3 py-2.5 border border-white/10 rounded-xl bg-black/50 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-transparent transition-all ${
-                      hasSavedSession ? 'cursor-default opacity-80' : ''
+                      (hasSavedSession && streamInput.trim().length > 0) ? 'cursor-default opacity-80' : ''
                     } disabled:opacity-50`}
                   />
                   
-                  {hasSavedSession && (
+                  {(hasSavedSession && streamInput.trim().length > 0) && (
                     <div className="absolute inset-0 bg-red-500/65 backdrop-blur-[1px] rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 z-10 cursor-pointer"
                          onClick={(e) => {
                            e.preventDefault();
@@ -486,6 +505,7 @@ export default function App() {
                              localStorage.removeItem('banterBuddy_topicGroups');
                              localStorage.removeItem('banterBuddy_elapsedSeconds');
                              localStorage.removeItem('banterBuddy_aiHistory');
+                             localStorage.removeItem('banterBuddy_lastIdentifier');
                              setConfirmTerminate(false);
                            } else {
                              setConfirmTerminate(true);
@@ -565,6 +585,7 @@ export default function App() {
                    'Awaiting connection'}
                 </span>
               </div>
+
             </div>
           </div>
 
