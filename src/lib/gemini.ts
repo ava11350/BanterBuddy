@@ -40,6 +40,50 @@ First, use Google Search to find the most recent information, tweets, community 
     }
   }
 
+  private pruneHistory() {
+    const MAX_HISTORY_LENGTH = 20; // Maximum number of items in history before we prune
+    const RECENT_WINDOW = 12; // Keep the last 6 exchanges untouched
+
+    if (this.history.length > MAX_HISTORY_LENGTH) {
+      const initialExchange = this.history.slice(0, 2);
+      const recentWindow = this.history.slice(this.history.length - RECENT_WINDOW);
+      const middleExchanges = this.history.slice(2, this.history.length - RECENT_WINDOW);
+
+      let accumulatedSummary = "";
+      
+      for (let i = 0; i < middleExchanges.length; i++) {
+        const msg = middleExchanges[i];
+        const text = msg?.parts?.[0]?.text || "";
+        
+        if (msg.role === 'user' && text.startsWith("We are condensing older history.")) {
+           const extracted = text.substring(text.indexOf(":") + 1).trim();
+           if (extracted) accumulatedSummary += " " + extracted;
+        } else if (msg.role === 'model') {
+           try {
+             // Extract JSON summary from previous model responses
+             const jsonStr = text.replace(/```json\n?|\n?```/g, '');
+             const parsed = JSON.parse(jsonStr);
+             if (parsed.summary) {
+               accumulatedSummary += " " + parsed.summary;
+             }
+           } catch(e) {}
+        }
+      }
+
+      accumulatedSummary = accumulatedSummary.trim();
+
+      if (accumulatedSummary) {
+        const summaryExchange = [
+          { role: 'user', parts: [{ text: `We are condensing older history. Please acknowledge this summary of older parts of the stream so you don't forget the context: ${accumulatedSummary}` }] },
+          { role: 'model', parts: [{ text: "Acknowledged. I will keep this previous context in mind." }] }
+        ];
+        this.history = [...initialExchange, ...summaryExchange, ...recentWindow];
+      } else {
+        this.history = [...initialExchange, ...recentWindow];
+      }
+    }
+  }
+
   async getTopics(style: SuggestionStyle, transcript: string, audioBase64?: string, audioMimeType?: string): Promise<{summary?: string, topics: string[]}> {
     let styleInstruction = "";
     if (style === 'personalized') {
@@ -61,10 +105,11 @@ ${audioBase64 ? "I have also provided the most recent high-quality 60-second aud
 
 CRITICAL REQUIREMENTS:
 1. Goal: Cure "dead air". The suggestions must be instantly readable and spark immediate thoughts.
-2. Format: Use punchy phrases, bold statements, or engaging questions. (e.g., "Thoughts on the new Zelda leaks?", "Story time: your worst gaming moment", "Hot take on the current meta").
+2. Format: Use punchy phrases, bold statements, or engaging questions. (e.g., "Thoughts on the new Zelda leaks?", "Story time: your worst gaming moment", "Hot take on the current meta", "Reacting to this new drama").
 3. Brevity: Keep it under 8-10 words. It must be readable in a split-second glance.
 4. Style: ${styleInstruction}
-5. No Echoing: Don't just summarize what they just said in the topics. Give them the *next* thing to talk about.
+5. Progress the Conversation: Do not just summarize what they just said. Provide the *next* logical hook, a provocative question, or a fresh new angle.
+6. STRICTLY NO REPEATS: Carefully review the context history. DO NOT suggest any topics or ideas that you have already suggested previously. Freshness is paramount.
 
 Return JSON with 'summary' (string) and 'topics' (array of strings).`;
 
@@ -87,6 +132,7 @@ Return JSON with 'summary' (string) and 'topics' (array of strings).`;
       contents: currentContents,
       config: {
         responseMimeType: "application/json",
+        temperature: 0.9,
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -106,6 +152,8 @@ Return JSON with 'summary' (string) and 'topics' (array of strings).`;
     if (response.candidates?.[0]?.content) {
       this.history.push(response.candidates[0].content);
     }
+
+    this.pruneHistory();
 
     try {
       const text = response.text;
