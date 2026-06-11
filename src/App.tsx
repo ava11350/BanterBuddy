@@ -9,21 +9,6 @@ import { checkIfLiveDirectly } from './lib/youtube';
 import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play, Mic, MicOff, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-// Polyfill btoa for UTF-8 characters if any library (like GenAI SDK) attempts to encode transcripts
-// containing smart quotes, emojis, or international characters, which natively throws 
-// "The string did not match the expected pattern" (InvalidCharacterError).
-if (typeof window !== 'undefined') {
-  const originalBtoa = window.btoa;
-  window.btoa = function(str: string) {
-    try {
-      return originalBtoa(str);
-    } catch (e) {
-      // unescape + encodeURIComponent converts UTF-8 strings into Latin1 byte sequences
-      return originalBtoa(unescape(encodeURIComponent(str)));
-    }
-  };
-}
-
 type TopicGroup = {
   id: string;
   timestamp: Date;
@@ -263,8 +248,8 @@ export default function App() {
     // Check immediately upon connection
     checkLiveStatus();
 
-    // Then check every 30 seconds
-    const intervalId = setInterval(checkLiveStatus, 30000);
+    // Then check every 15 minutes to avoid rate limits
+    const intervalId = setInterval(checkLiveStatus, 15 * 60 * 1000);
     return () => clearInterval(intervalId);
   }, [uplinkStatus, streamInput]);
 

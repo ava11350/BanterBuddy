@@ -6,14 +6,16 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  app.use(express.json());
+
   // API routes FIRST
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
   });
 
-  app.get("/api/check-live", async (req, res) => {
+  app.post("/api/check-live", async (req, res) => {
     try {
-      const { identifier } = req.query;
+      const { identifier } = req.body;
       if (!identifier || typeof identifier !== "string") {
         return res.status(400).json({ error: "Missing identifier" });
       }
