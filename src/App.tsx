@@ -575,7 +575,7 @@ export default function App() {
           </div>
 
           <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-            <h2 className="text-sm font-medium text-white/50 uppercase tracking-wider mb-4">Suggestion Style</h2>
+            <h2 className="text-sm font-medium text-white/50 uppercase tracking-wider mb-4">Dialogue Style</h2>
             <div className="flex flex-col gap-3">
               <label className="flex items-center gap-3 cursor-pointer group">
                 <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'personalized' ? 'border-purple-500 bg-purple-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
@@ -595,7 +595,7 @@ export default function App() {
                 <input type="radio" className="hidden" checked={suggestionStyle === 'balanced'} onChange={() => setSuggestionStyle('balanced')} />
                 <div>
                   <div className="text-sm font-medium text-white/90">Balanced</div>
-                  <div className="text-xs text-white/50">Hybrid of personalized and abstract topics</div>
+                  <div className="text-xs text-white/50">Hybrid of personalized and abstract responses</div>
                 </div>
               </label>
 
@@ -606,7 +606,7 @@ export default function App() {
                 <input type="radio" className="hidden" checked={suggestionStyle === 'abstract'} onChange={() => setSuggestionStyle('abstract')} />
                 <div>
                   <div className="text-sm font-medium text-white/90">Abstract</div>
-                  <div className="text-xs text-white/50">Helps change the topic and start new dialogues</div>
+                  <div className="text-xs text-white/50">Helps change the subject and start new dialogues</div>
                 </div>
               </label>
             </div>
@@ -627,8 +627,8 @@ export default function App() {
             </div>
             <p className="text-xs text-white/50 leading-relaxed">
               {isMicEnabled 
-                ? "Listening to stream audio to provide immediate conversational context for suggestions." 
-                : "Enable microphone to allow BanterBuddy to listen to your stream and provide more relevant suggestions."}
+                ? "Listening to stream audio to provide immediate conversational context for dialogue." 
+                : "Enable microphone to allow BanterBuddy to listen to your stream and provide more relevant dialogue."}
             </p>
 
             {isMicEnabled && audioDevices.length > 0 && (
@@ -687,14 +687,14 @@ export default function App() {
               className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw className={`w-4 h-4 ${isAnalyzing ? 'animate-spin' : ''}`} />
-              {isAnalyzing ? 'Analyzing Stream...' : 'Suggest Topics Now'}
+              {isAnalyzing ? 'Analyzing Stream...' : 'Generate Responses Now'}
             </button>
           </div>
 
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <Activity className="w-5 h-5 text-purple-500" />
-              <h2 className="text-xl font-medium">Live Suggestions</h2>
+              <h2 className="text-xl font-medium">Co-Host Dialogue</h2>
             </div>
             {topicGroups.length > 0 && (
               <span className="text-sm text-white/50">{visibleGroups.length} visible</span>
@@ -725,8 +725,8 @@ export default function App() {
           {visibleGroups.length === 0 ? (
             <div className="h-64 border border-white/10 border-dashed rounded-2xl flex flex-col items-center justify-center text-white/40">
               <Sparkles className="w-8 h-8 mb-3 opacity-50" />
-              <p>{topicGroups.length > 0 ? "No topics at this point in time." : "No topics suggested yet."}</p>
-              <p className="text-sm mt-1">{topicGroups.length > 0 ? "Drag the slider to view later topics." : "Establish an uplink to generate ideas."}</p>
+              <p>{topicGroups.length > 0 ? "No dialogue at this point in time." : "No responses generated yet."}</p>
+              <p className="text-sm mt-1">{topicGroups.length > 0 ? "Drag the slider to view later dialogue." : "Establish an uplink to begin the conversation."}</p>
             </div>
           ) : (
             <div className="space-y-6">
