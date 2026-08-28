@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { StreamAnalyzerSession, SuggestionStyle } from './lib/gemini';
+import { StreamAnalyzerSession, SuggestionStyle, GeminiModelPreference, TopicSuggestion } from './lib/gemini';
 import { checkIfLiveDirectly } from './lib/youtube';
 import { Sparkles, RefreshCw, Clock, Loader2, Link as LinkIcon, Activity, Pause, Play, Mic, MicOff, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -13,7 +13,7 @@ type TopicGroup = {
   id: string;
   timestamp: Date;
   elapsedAt: number;
-  topics: string[];
+  topics: (string | TopicSuggestion)[];
 };
 
 export default function App() {
@@ -64,6 +64,10 @@ export default function App() {
     const saved = localStorage.getItem('banterBuddy_intervalMinutes');
     return saved ? Number(saved) : 3;
   });
+  const [modelPreference, setModelPreference] = useState<GeminiModelPreference>(() => {
+    const saved = localStorage.getItem('banterBuddy_modelPreference') as GeminiModelPreference;
+    return saved || 'pro';
+  });
   const [isPaused, setIsPaused] = useState(false);
   
   const [suggestionStyle, setSuggestionStyle] = useState<SuggestionStyle>(() => {
@@ -94,11 +98,12 @@ export default function App() {
   useEffect(() => { localStorage.setItem('banterBuddy_topicGroups', JSON.stringify(topicGroups)); }, [topicGroups]);
   useEffect(() => { localStorage.setItem('banterBuddy_aiHistory', JSON.stringify(aiHistory)); }, [aiHistory]);
   useEffect(() => { localStorage.setItem('banterBuddy_intervalMinutes', intervalMinutes.toString()); }, [intervalMinutes]);
+  useEffect(() => { localStorage.setItem('banterBuddy_modelPreference', modelPreference); }, [modelPreference]);
   useEffect(() => { localStorage.setItem('banterBuddy_suggestionStyle', suggestionStyle); }, [suggestionStyle]);
   useEffect(() => { localStorage.setItem('banterBuddy_elapsedSeconds', elapsedSeconds.toString()); }, [elapsedSeconds]);
 
-  const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled });
-  useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes, suggestionStyle, isMicEnabled]);
+  const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, modelPreference, suggestionStyle, isMicEnabled });
+  useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes, modelPreference, suggestionStyle, isMicEnabled }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes, modelPreference, suggestionStyle, isMicEnabled]);
 
   const elapsedSecondsRef = useRef(elapsedSeconds);
   useEffect(() => { elapsedSecondsRef.current = elapsedSeconds; }, [elapsedSeconds]);
@@ -294,7 +299,7 @@ export default function App() {
         localStorage.removeItem('banterBuddy_aiHistory');
 
         const analyzer = new StreamAnalyzerSession(streamInput);
-        await analyzer.initialize();
+        await analyzer.initialize(stateRef.current.modelPreference);
         analyzerRef.current = analyzer;
         setAiHistory(analyzer.getHistory());
         localStorage.setItem('banterBuddy_lastIdentifier', streamInput);
@@ -321,7 +326,7 @@ export default function App() {
     if (isValid) {
       try {
         const analyzer = new StreamAnalyzerSession(streamInput, aiHistory);
-        await analyzer.initialize(); // Skips because history has length
+        await analyzer.initialize(stateRef.current.modelPreference); // Skips because history has length
         analyzerRef.current = analyzer;
         localStorage.setItem('banterBuddy_lastIdentifier', streamInput);
 
@@ -386,8 +391,10 @@ export default function App() {
       const result = await analyzerRef.current.getTopics(
         stateRef.current.suggestionStyle,
         accumulatedTranscript,
+        stateRef.current.intervalMinutes,
         audioBase64,
-        audioMimeType
+        audioMimeType,
+        stateRef.current.modelPreference
       );
       setAiHistory(analyzerRef.current.getHistory());
       if (result.topics && result.topics.length > 0) {
@@ -415,18 +422,31 @@ export default function App() {
   const visibleGroups = topicGroups.filter(group => group.elapsedAt <= sliderValue);
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-purple-500/30">
+    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-orange-500/30">
       {/* Header */}
       <header className="border-b border-white/10 bg-black/50 backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-white" />
             </div>
             <h1 className="text-xl font-semibold tracking-tight">BanterBuddy</h1>
           </div>
           
           <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-sm text-white/60 bg-white/5 px-3 py-1.5 rounded-full">
+              <Sparkles className="w-4 h-4" />
+              <select 
+                value={modelPreference}
+                onChange={(e) => setModelPreference(e.target.value as GeminiModelPreference)}
+                className="bg-transparent border-none outline-none cursor-pointer text-white max-w-[120px] truncate"
+              >
+                <option value="pro" className="bg-neutral-900">Gemini Pro</option>
+                <option value="flash" className="bg-neutral-900">Gemini Flash</option>
+                <option value="flash-lite" className="bg-neutral-900">Flash Lite</option>
+              </select>
+            </div>
+            
             <div className="flex items-center gap-2 text-sm text-white/60 bg-white/5 px-3 py-1.5 rounded-full">
               <Clock className="w-4 h-4" />
               <select 
@@ -470,7 +490,7 @@ export default function App() {
                     readOnly={(hasSavedSession && streamInput.trim().length > 0) || uplinkStatus === 'connected' || uplinkStatus === 'connecting'}
                     disabled={uplinkStatus === 'connected' || uplinkStatus === 'connecting'}
                     placeholder="e.g., @ava11350 or https://youtube.com/..."
-                    className={`block w-full pl-10 pr-3 py-2.5 border border-white/10 rounded-xl bg-black/50 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-transparent transition-all ${
+                    className={`block w-full pl-10 pr-3 py-2.5 border border-white/10 rounded-xl bg-black/50 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-transparent transition-all ${
                       (hasSavedSession && streamInput.trim().length > 0) ? 'cursor-default opacity-80' : ''
                     } disabled:opacity-50`}
                   />
@@ -534,7 +554,7 @@ export default function App() {
                       <button
                         onClick={handleConnectRecover}
                         disabled={!streamInput.trim()}
-                        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium transition-all bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 border border-purple-500/20"
+                        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium transition-all bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 border border-orange-500/20"
                       >
                         Recover Previous Uplink
                       </button>
@@ -578,8 +598,8 @@ export default function App() {
             <h2 className="text-sm font-medium text-white/50 uppercase tracking-wider mb-4">Dialogue Style</h2>
             <div className="flex flex-col gap-3">
               <label className="flex items-center gap-3 cursor-pointer group">
-                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'personalized' ? 'border-purple-500 bg-purple-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
-                  {suggestionStyle === 'personalized' && <div className="w-2.5 h-2.5 rounded-full bg-purple-500" />}
+                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'personalized' ? 'border-orange-500 bg-orange-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
+                  {suggestionStyle === 'personalized' && <div className="w-2.5 h-2.5 rounded-full bg-orange-500" />}
                 </div>
                 <input type="radio" className="hidden" checked={suggestionStyle === 'personalized'} onChange={() => setSuggestionStyle('personalized')} />
                 <div>
@@ -589,8 +609,8 @@ export default function App() {
               </label>
               
               <label className="flex items-center gap-3 cursor-pointer group">
-                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'balanced' ? 'border-purple-500 bg-purple-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
-                  {suggestionStyle === 'balanced' && <div className="w-2.5 h-2.5 rounded-full bg-purple-500" />}
+                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'balanced' ? 'border-orange-500 bg-orange-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
+                  {suggestionStyle === 'balanced' && <div className="w-2.5 h-2.5 rounded-full bg-orange-500" />}
                 </div>
                 <input type="radio" className="hidden" checked={suggestionStyle === 'balanced'} onChange={() => setSuggestionStyle('balanced')} />
                 <div>
@@ -600,8 +620,8 @@ export default function App() {
               </label>
 
               <label className="flex items-center gap-3 cursor-pointer group">
-                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'abstract' ? 'border-purple-500 bg-purple-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
-                  {suggestionStyle === 'abstract' && <div className="w-2.5 h-2.5 rounded-full bg-purple-500" />}
+                <div className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center transition-colors ${suggestionStyle === 'abstract' ? 'border-orange-500 bg-orange-500/20' : 'border-white/20 group-hover:border-white/40'}`}>
+                  {suggestionStyle === 'abstract' && <div className="w-2.5 h-2.5 rounded-full bg-orange-500" />}
                 </div>
                 <input type="radio" className="hidden" checked={suggestionStyle === 'abstract'} onChange={() => setSuggestionStyle('abstract')} />
                 <div>
@@ -637,7 +657,7 @@ export default function App() {
                 <select 
                   value={selectedDeviceId}
                   onChange={(e) => setSelectedDeviceId(e.target.value)}
-                  className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                  className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50"
                 >
                   <option value="default">Default System Device</option>
                   {audioDevices.map(device => (
@@ -675,7 +695,7 @@ export default function App() {
                </div>
                <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                  <div
-                   className={`h-full transition-all duration-1000 ease-linear ${isPaused ? 'bg-yellow-500' : 'bg-purple-500'}`}
+                   className={`h-full transition-all duration-1000 ease-linear ${isPaused ? 'bg-yellow-500' : 'bg-orange-500'}`}
                    style={{ width: `${((intervalMinutes * 60 - secondsUntilNext) / (intervalMinutes * 60)) * 100}%` }}
                  />
                </div>
@@ -693,7 +713,7 @@ export default function App() {
 
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
-              <Activity className="w-5 h-5 text-purple-500" />
+              <Activity className="w-5 h-5 text-orange-500" />
               <h2 className="text-xl font-medium">Co-Host Dialogue</h2>
             </div>
             {topicGroups.length > 0 && (
@@ -717,7 +737,7 @@ export default function App() {
                   setSliderValue(val);
                   setIsAtLatest(val >= elapsedSeconds - 2);
                 }}
-                className="w-full accent-purple-500 h-2 bg-white/10 rounded-lg appearance-none cursor-pointer"
+                className="w-full accent-orange-500 h-2 bg-white/10 rounded-lg appearance-none cursor-pointer"
               />
             </div>
           )}
@@ -743,28 +763,43 @@ export default function App() {
                     <div className="absolute left-[11px] top-8 bottom-[-24px] w-px bg-white/10" />
                     
                     {/* Timeline dot */}
-                    <div className="absolute left-0 top-1.5 w-6 h-6 rounded-full bg-[#0a0a0a] border-2 border-purple-500 flex items-center justify-center">
-                      <div className="w-2 h-2 rounded-full bg-purple-500" />
+                    <div className="absolute left-0 top-1.5 w-6 h-6 rounded-full bg-[#0a0a0a] border-2 border-orange-500 flex items-center justify-center">
+                      <div className="w-2 h-2 rounded-full bg-orange-500" />
                     </div>
 
                     <div className="flex items-center gap-3 mb-3">
                       <span className="text-sm text-white/50">
                         {group.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
-                      <span className="text-xs font-mono text-purple-400/70 bg-purple-500/10 px-2 py-0.5 rounded">
+                      <span className="text-xs font-mono text-orange-400/70 bg-orange-500/10 px-2 py-0.5 rounded">
                         +{formatTime(group.elapsedAt)}
                       </span>
                     </div>
 
-                    <div className="grid gap-3">
-                      {group.topics.map((topic, i) => (
-                        <div 
-                          key={i}
-                          className="bg-white/5 border border-white/10 rounded-xl p-4 hover:bg-white/10 transition-colors cursor-default"
-                        >
-                          <p className="text-white/90 text-lg font-medium leading-relaxed">{topic}</p>
-                        </div>
-                      ))}
+                    <div className="flex flex-col gap-4">
+                      {group.topics.map((topic, i) => {
+                        const text = typeof topic === 'string' ? topic : topic.text;
+                        const quote = typeof topic === 'string' ? undefined : topic.quote;
+
+                        return (
+                          <div key={i} className="flex flex-col gap-2 w-full">
+                            {quote && (
+                              <div className="flex justify-start">
+                                <div className="bg-white/10 text-white/80 text-sm px-4 py-3 rounded-2xl rounded-bl-sm max-w-[85%]">
+                                  <span className="text-xs text-white/50 block mb-1 font-semibold uppercase tracking-wider">Streamer</span>
+                                  "{quote}"
+                                </div>
+                              </div>
+                            )}
+                            <div className="flex justify-end">
+                              <div className="bg-gradient-to-br from-orange-600 to-red-600 text-white text-base px-5 py-3 rounded-2xl rounded-br-sm max-w-[85%] shadow-lg">
+                                <span className="text-xs text-orange-200 block mb-1 font-semibold uppercase tracking-wider">BB</span>
+                                <p className="leading-relaxed">{text}</p>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </motion.div>
                 ))}
