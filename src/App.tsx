@@ -82,6 +82,7 @@ export default function App() {
   const [secondsUntilNext, setSecondsUntilNext] = useState(intervalMinutes * 60);
   const secondsUntilNextRef = useRef(intervalMinutes * 60);
   const [isAtLatest, setIsAtLatest] = useState(true);
+  const [channelName, setChannelName] = useState<string>(() => localStorage.getItem('banterBuddy_channelName') || 'Streamer');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -101,6 +102,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('banterBuddy_modelPreference', modelPreference); }, [modelPreference]);
   useEffect(() => { localStorage.setItem('banterBuddy_suggestionStyle', suggestionStyle); }, [suggestionStyle]);
   useEffect(() => { localStorage.setItem('banterBuddy_elapsedSeconds', elapsedSeconds.toString()); }, [elapsedSeconds]);
+  useEffect(() => { localStorage.setItem('banterBuddy_channelName', channelName); }, [channelName]);
 
   const stateRef = useRef({ isAnalyzing, uplinkStatus, streamInput, intervalMinutes, modelPreference, suggestionStyle, isMicEnabled });
   useEffect(() => { stateRef.current = { isAnalyzing, uplinkStatus, streamInput, intervalMinutes, modelPreference, suggestionStyle, isMicEnabled }; }, [isAnalyzing, uplinkStatus, streamInput, intervalMinutes, modelPreference, suggestionStyle, isMicEnabled]);
@@ -299,7 +301,8 @@ export default function App() {
         localStorage.removeItem('banterBuddy_aiHistory');
 
         const analyzer = new StreamAnalyzerSession(streamInput);
-        await analyzer.initialize(stateRef.current.modelPreference);
+        const name = await analyzer.initialize(stateRef.current.modelPreference);
+        setChannelName(name || 'Streamer');
         analyzerRef.current = analyzer;
         setAiHistory(analyzer.getHistory());
         localStorage.setItem('banterBuddy_lastIdentifier', streamInput);
@@ -786,7 +789,7 @@ export default function App() {
                             {quote && (
                               <div className="flex justify-start">
                                 <div className="bg-white/10 text-white/80 text-sm px-4 py-3 rounded-2xl rounded-bl-sm max-w-[85%]">
-                                  <span className="text-xs text-white/50 block mb-1 font-semibold uppercase tracking-wider">Streamer</span>
+                                  <span className="text-xs text-white/50 block mb-1 font-semibold uppercase tracking-wider">{channelName}</span>
                                   "{quote}"
                                 </div>
                               </div>

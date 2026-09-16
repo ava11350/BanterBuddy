@@ -53,11 +53,11 @@ export class StreamAnalyzerSession {
     return this.history;
   }
 
-  async initialize(modelPreference: GeminiModelPreference = 'pro') {
-    if (this.history.length > 0) return; // Skip initialization if we recovered history
+  async initialize(modelPreference: GeminiModelPreference = 'pro'): Promise<string | undefined> {
+    if (this.history.length > 0) return undefined; // Skip initialization if we recovered history
     const prompt = `You are an AI co-host for a livestreamer. The current livestream identifier/URL is: ${this.streamIdentifier}. The current time is ${new Date().toISOString()}. 
     
-First, use Google Search to find the most recent information, tweets, community updates, or news about this creator or stream to understand their background, niche, and CURRENT context. Build a comprehensive internal profile of this creator. You do not need to output the profile to me, just acknowledge that you have researched them and are ready to provide talking points.`;
+First, use Google Search to find the most recent information, tweets, community updates, or news about this creator or stream to understand their background, niche, and CURRENT context. Build a comprehensive internal profile of this creator. You do not need to output the full profile to me. Just output a JSON object with a single key 'channelName' containing the primary display name or handle of this creator.`;
 
     const userContent = { role: 'user', parts: [{ text: prompt }] };
     
@@ -65,7 +65,15 @@ First, use Google Search to find the most recent information, tweets, community 
       contents: [userContent],
       config: {
         tools: [{ googleSearch: {} }],
-        toolConfig: { includeServerSideToolInvocations: true }
+        toolConfig: { includeServerSideToolInvocations: true },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            channelName: { type: Type.STRING }
+          },
+          required: ["channelName"]
+        }
       }
     }, modelPreference);
 
@@ -73,6 +81,16 @@ First, use Google Search to find the most recent information, tweets, community 
     if (response.candidates?.[0]?.content) {
       this.history.push(response.candidates[0].content);
     }
+
+    try {
+      if (response.text) {
+        const parsed = JSON.parse(response.text);
+        return parsed.channelName;
+      }
+    } catch (e) {
+      console.error("Failed to parse channel name", e);
+    }
+    return undefined;
   }
 
   private pruneHistory() {
