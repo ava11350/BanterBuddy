@@ -1,4 +1,0 @@
-Before: AIzaSyC0bLdYT2YK8zrkgBXwrjFz5c5DNjHiOPw
-After: AIzaSyC0bLdYT2YK8zrkgBXwrjFz5c5DNjHiOPw
-3:02:43 AM [vite] .env changed, restarting server...
-3:02:43 AM [vite] server restarted.
