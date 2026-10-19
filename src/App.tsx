@@ -111,14 +111,14 @@ export default function App() {
     return saved ? Number(saved) : 3;
   });
   const [modelPreference, setModelPreference] = useState<GeminiModelPreference>(() => {
-    const versionKey = 'banterBuddy_waterfall_v2';
+    const versionKey = 'banterBuddy_waterfall_v3';
     if (!localStorage.getItem(versionKey)) {
       localStorage.setItem(versionKey, 'true');
-      localStorage.setItem('banterBuddy_modelPreference', 'pro');
-      return 'pro';
+      localStorage.setItem('banterBuddy_modelPreference', 'flash');
+      return 'flash';
     }
     const saved = localStorage.getItem('banterBuddy_modelPreference') as GeminiModelPreference;
-    return saved || 'pro';
+    return saved || 'flash';
   });
   const [isPaused, setIsPaused] = useState(false);
   
@@ -488,8 +488,14 @@ export default function App() {
     return saved !== null ? Number(saved) : 1;
   });
   const [ttsVoice, setTtsVoice] = useState<string>(() => {
+    const voiceVersionKey = 'banterBuddy_voice_default_v2';
+    if (!localStorage.getItem(voiceVersionKey)) {
+      localStorage.setItem(voiceVersionKey, 'true');
+      localStorage.setItem('banterBuddy_ttsVoice', 'Aoede');
+      return 'Aoede';
+    }
     const saved = localStorage.getItem('banterBuddy_ttsVoice');
-    return saved || 'Kore';
+    return saved || 'Aoede';
   });
   const [ttsModel, setTtsModel] = useState<TTSModelOption>(() => {
     const saved = localStorage.getItem('banterBuddy_ttsModel') as TTSModelOption;
@@ -525,7 +531,7 @@ export default function App() {
     localStorage.setItem('banterBuddy_ttsDemeanor', ttsDemeanor);
   }, [ttsDemeanor]);
 
-  const handlePlayTTS = async (text: string) => {
+  const handlePlayTTS = async (text: string, specificVoiceKey?: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -554,7 +560,7 @@ export default function App() {
     }
 
     // 4. Check the 5-item rolling cache for instant replay (saving quota & avoiding duplicate API calls)
-    const voiceCacheKey = `${ttsVoice} [${ttsModel.includes('lite') ? 'Lite' : 'Flash'}]`;
+    const voiceCacheKey = specificVoiceKey || `${ttsVoice} [${ttsModel.includes('lite') ? 'Lite' : 'Flash'}]`;
     const cachedUrl = getCachedTTSAudio(trimmed, voiceCacheKey);
     if (cachedUrl) {
       const audio = new Audio(cachedUrl);
@@ -998,7 +1004,7 @@ export default function App() {
                           <span className="truncate">{item.text}</span>
                         </div>
                         <button
-                          onClick={() => handlePlayTTS(item.text)}
+                          onClick={() => handlePlayTTS(item.text, item.voice)}
                           className="p-1 hover:text-white text-orange-400 transition-colors flex-shrink-0"
                           title={isItemPlaying ? "Pause audio" : "Replay cached query"}
                         >
@@ -1127,7 +1133,14 @@ export default function App() {
                         const text = typeof topic === 'string' ? topic : topic.text;
                         const quote = typeof topic === 'string' ? undefined : topic.quote;
                         const trimmed = text.trim();
-                        const isCached = cachedQueries.some(q => q.text === trimmed && q.voice === ttsVoice);
+                        const currentVoiceCacheKey = `${ttsVoice} [${ttsModel.includes('lite') ? 'Lite' : 'Flash'}]`;
+                        const isCached = cachedQueries.some(q => 
+                          q.text === trimmed && (
+                            q.voice === currentVoiceCacheKey || 
+                            q.voice.split(' ')[0] === ttsVoice ||
+                            q.voice === ttsVoice
+                          )
+                        );
                         const isThisPlaying = playingText === trimmed;
                         const isThisLoading = isTtsLoading === trimmed;
 
@@ -1153,7 +1166,7 @@ export default function App() {
                                   <div className="flex items-center gap-1.5">
                                     <span className="text-xs text-orange-200 font-semibold uppercase tracking-wider">BB</span>
                                     {isCached && (
-                                      <span className="text-[10px] bg-black/25 text-orange-200 px-1.5 py-0.5 rounded font-mono flex items-center gap-1" title="Saved in rolling cache for instant replay">
+                                      <span className="text-[10px] bg-black/35 text-amber-200 border border-amber-400/35 px-1.5 py-0.5 rounded font-mono flex items-center gap-1 shadow-sm select-none" title="Saved in rolling cache for instant replay (0 quota)">
                                         <Zap className="w-2.5 h-2.5 fill-current text-yellow-300" />
                                         Cached
                                       </span>
@@ -1168,7 +1181,7 @@ export default function App() {
                                         <Square className="w-4 h-4 fill-current" />
                                       </div>
                                     ) : (
-                                      <Volume2 className={`w-4 h-4 transition-opacity ${isCached ? 'opacity-90' : 'opacity-0 group-hover:opacity-100'}`} />
+                                      <Volume2 className={`w-4 h-4 transition-opacity ${isCached ? 'opacity-100 text-amber-200' : 'opacity-0 group-hover:opacity-100'}`} />
                                     )}
                                   </div>
                                 </div>

@@ -19,18 +19,45 @@ const listeners: Array<(items: CachedTTSQuery[]) => void> = [];
  * Retrieves cached audio URL for the given text and voice if present in the 5-item rolling window.
  * If found, moves it to the most recent position and updates timestamp.
  */
-export function getCachedTTSAudio(text: string, voice: string): string | null {
-  const key = `${voice}:::${text.trim()}`;
-  const index = cache.findIndex(item => item.id === key);
-  if (index !== -1) {
-    const item = cache[index];
-    // Move to end (most recent)
-    cache.splice(index, 1);
+export function getCachedTTSAudio(text: string, voice?: string): string | null {
+  const trimmed = text.trim();
+  if (voice) {
+    const key = `${voice}:::${trimmed}`;
+    const exactIndex = cache.findIndex(item => item.id === key);
+    if (exactIndex !== -1) {
+      const item = cache[exactIndex];
+      // Move to end (most recent)
+      cache.splice(exactIndex, 1);
+      item.timestamp = Date.now();
+      cache.push(item);
+      notifyListeners();
+      return item.audioUrl;
+    }
+
+    // Secondary match: same base voice name (e.g. "Aoede" matching "Aoede [Lite]")
+    const baseVoice = voice.split(' ')[0];
+    const baseIndex = cache.findIndex(item => item.text === trimmed && item.voice.split(' ')[0] === baseVoice);
+    if (baseIndex !== -1) {
+      const item = cache[baseIndex];
+      cache.splice(baseIndex, 1);
+      item.timestamp = Date.now();
+      cache.push(item);
+      notifyListeners();
+      return item.audioUrl;
+    }
+  }
+
+  // Fallback: match by text if present in the 5-item rolling cache
+  const fallbackIndex = cache.findIndex(item => item.text === trimmed);
+  if (fallbackIndex !== -1) {
+    const item = cache[fallbackIndex];
+    cache.splice(fallbackIndex, 1);
     item.timestamp = Date.now();
     cache.push(item);
     notifyListeners();
     return item.audioUrl;
   }
+
   return null;
 }
 
@@ -40,7 +67,11 @@ export function getCachedTTSAudio(text: string, voice: string): string | null {
 export function isTextCached(text: string, voice?: string): boolean {
   const trimmed = text.trim();
   if (voice) {
-    return cache.some(item => item.id === `${voice}:::${trimmed}`);
+    const baseVoice = voice.split(' ')[0];
+    return cache.some(item => 
+      item.id === `${voice}:::${trimmed}` || 
+      (item.text === trimmed && (item.voice === voice || item.voice.split(' ')[0] === baseVoice))
+    );
   }
   return cache.some(item => item.text.trim() === trimmed);
 }

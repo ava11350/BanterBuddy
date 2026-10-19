@@ -6,7 +6,7 @@ export type SuggestionStyle = 'personalized' | 'balanced' | 'abstract';
 export type GeminiModelPreference = 'pro' | 'flash' | 'flash-lite';
 export type TTSModelOption = 'gemini-3.8-flash-lite-tts' | 'gemini-3.8-flash-tts';
 
-function getModelWaterfall(preference: GeminiModelPreference = 'pro'): string[] {
+function getModelWaterfall(preference: GeminiModelPreference = 'flash'): string[] {
   // Reordered fallback sequence:
   // 1st: Pro ('gemini-4-argon')
   // 2nd: Flash ('gemini-3.8-flash')
@@ -20,7 +20,7 @@ function getModelWaterfall(preference: GeminiModelPreference = 'pro'): string[] 
   return ['gemini-4-argon', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
 }
 
-async function generateWithFallback(requestConfig: any, preference: GeminiModelPreference = 'pro') {
+async function generateWithFallback(requestConfig: any, preference: GeminiModelPreference = 'flash') {
   const waterfall = getModelWaterfall(preference);
   let lastError: any = null;
   
@@ -45,7 +45,7 @@ export interface TopicSuggestion { quote?: string; text: string; }
 
 export async function generateTTSAudio(
   text: string, 
-  voiceName: string = 'Kore',
+  voiceName: string = 'Aoede',
   styleInstruction?: string,
   modelName: TTSModelOption = 'gemini-3.8-flash-lite-tts'
 ): Promise<{ audioUrl: string | null }> {
@@ -254,7 +254,7 @@ Output a JSON object with:
     }
   }
 
-  async getTopics(style: SuggestionStyle, transcript: string, intervalMinutes: number, audioBase64?: string, audioMimeType?: string, modelPreference: GeminiModelPreference = 'pro'): Promise<{summary?: string, topics: TopicSuggestion[]}> {
+  async getTopics(style: SuggestionStyle, transcript: string, intervalMinutes: number, audioBase64?: string, audioMimeType?: string, modelPreference: GeminiModelPreference = 'flash'): Promise<{summary?: string, topics: TopicSuggestion[]}> {
     let styleInstruction = "";
     if (style === 'personalized') {
       styleInstruction = "Highly relevant to the current conversation or the creator's specific niche.";
