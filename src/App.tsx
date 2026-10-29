@@ -228,22 +228,24 @@ export default function App() {
                 }
               };
 
+              let isSpeechBlocked = false;
+
               recognition.onerror = (event: any) => {
                 if (event.error === 'no-speech') {
                   // Silent restart is naturally handled by onend
                   return;
                 }
-                console.error("Speech recognition error:", event.error);
                 if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-                  // Stop trying to use SpeechRecognition if it's blocked by the browser.
-                  if (speechRecognitionRef.current) {
-                    speechRecognitionRef.current.onend = null; // Prevent restart
-                  }
+                  isSpeechBlocked = true;
+                  recognition.onend = null;
+                  console.warn("Speech recognition unavailable in current browser context:", event.error);
+                  return;
                 }
+                console.warn("Speech recognition notice:", event.error);
               };
 
               recognition.onend = () => {
-                if (active && isMicEnabled) {
+                if (active && isMicEnabled && !isSpeechBlocked) {
                   try { recognition.start(); } catch (e) {}
                 }
               };
@@ -251,7 +253,7 @@ export default function App() {
               recognition.start();
               speechRecognitionRef.current = recognition;
             } catch (err) {
-              console.error("Failed to initialize speech recognition:", err);
+              console.warn("Could not start browser speech recognition:", err);
             }
           }
 
@@ -369,7 +371,12 @@ export default function App() {
         setUplinkStatus('connected');
         stateRef.current.uplinkStatus = 'connected';
         setIsPaused(false);
-        triggerAnalysis(); // Initial analysis
+        // Stagger first dialogue generation slightly to avoid concurrent burst quota spikes on Free Tier
+        setTimeout(() => {
+          if (stateRef.current.uplinkStatus === 'connected' && !stateRef.current.isAnalyzing) {
+            triggerAnalysis();
+          }
+        }, 1200);
       } catch (error) {
         console.error("Failed to initialize analyzer session", error);
         setUplinkStatus('error');

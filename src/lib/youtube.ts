@@ -12,7 +12,7 @@ export async function checkIfLiveDirectly(identifier: string): Promise<boolean> 
     const data = await response.json();
     return data.isLive === true;
   } catch (e) {
-    console.error("Direct live check failed:", e);
+    console.debug("Direct live check probe status:", e);
     return false;
   }
 }
