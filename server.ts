@@ -8,7 +8,9 @@ import {
   ai, 
   handleTTS, 
   handleInitializeStream, 
-  handleGetTopics 
+  handleGetTopics,
+  isApiKeyConfigured,
+  isApiKeyError
 } from "./server/geminiService";
 
 async function startServer() {
@@ -19,10 +21,46 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-
   // Health check
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
+  });
+
+  // Gemini API Key Status Check
+  app.get("/api/gemini/status", async (req, res) => {
+    const configured = isApiKeyConfigured();
+    if (!configured) {
+      return res.json({
+        ok: false,
+        apiKeyError: {
+          type: "missing",
+          message: "No GEMINI_API_KEY detected in server environment."
+        }
+      });
+    }
+
+    if (req.query.verify === 'true') {
+      try {
+        await ai.models.generateContent({
+          model: "gemini-3.1-flash-lite",
+          contents: "ping",
+          config: { maxOutputTokens: 1 }
+        });
+        return res.json({ ok: true, verified: true });
+      } catch (err: any) {
+        if (isApiKeyError(err)) {
+          return res.json({
+            ok: false,
+            apiKeyError: {
+              type: "invalid",
+              message: err?.message || "Gemini API key is invalid or unauthorized."
+            }
+          });
+        }
+      }
+    }
+
+    return res.json({ ok: true });
   });
 
   // YouTube live stream detector

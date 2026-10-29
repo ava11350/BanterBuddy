@@ -3,10 +3,34 @@ import dotenv from "dotenv";
 dotenv.config();
 
 // Create server-side shared Gemini client with required User-Agent header
-const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || '';
+export function getApiKey(): string {
+  dotenv.config();
+  return process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || '';
+}
+
+export function isApiKeyConfigured(): boolean {
+  const key = getApiKey();
+  return Boolean(key && key.trim().length > 0 && key !== 'MY_GEMINI_API_KEY');
+}
+
+export function isApiKeyError(error: any): boolean {
+  if (!isApiKeyConfigured()) return true;
+  const msg = String(error?.message || error || '').toLowerCase();
+  const status = error?.status || error?.statusCode;
+  return (status === 400 && (msg.includes('api key not valid') || msg.includes('api_key_invalid') || msg.includes('invalid api key'))) ||
+         status === 401 || 
+         status === 403 || 
+         msg.includes('api key not valid') || 
+         msg.includes('api_key_invalid') || 
+         msg.includes('invalid api key') || 
+         msg.includes('permission_denied') || 
+         msg.includes('unauthenticated') || 
+         msg.includes('api key is required') || 
+         msg.includes('pass a valid api key');
+}
 
 export const ai = new GoogleGenAI({
-  apiKey,
+  apiKey: getApiKey(),
   httpOptions: {
     headers: {
       'User-Agent': 'aistudio-build',
@@ -69,6 +93,10 @@ export async function generateWithFallback(requestConfig: any, preference: Gemin
       console.log(`[Server Waterfall] Successfully generated with model: ${model}`);
       return response;
     } catch (error: any) {
+      if (isApiKeyError(error)) {
+        console.warn(`[Server Waterfall] Gemini API key failure detected on model ${model}:`, error?.message || error);
+        throw error;
+      }
       if (isQuotaOr429Error(error)) {
         if (model === 'gemini-4-argon') {
           console.log(`[Server Waterfall] Gemini Pro quota exhausted (Free Tier detected). Routing to Flash models.`);
@@ -117,7 +145,19 @@ export async function handleTTS(
   voiceName: string = 'Aoede',
   styleInstruction?: string,
   modelName: TTSModelOption = 'gemini-3.8-flash-lite-tts'
-): Promise<{ audioBase64: string; mimeType: string }> {
+): Promise<{ audioBase64: string; mimeType: string; apiKeyError?: { type: string; message: string } }> {
+  if (!isApiKeyConfigured()) {
+    console.warn("[Server TTS] No Gemini API key configured for speech synthesis.");
+    return {
+      audioBase64: createSilentWavBase64(),
+      mimeType: 'audio/wav',
+      apiKeyError: {
+        type: 'missing',
+        message: 'No GEMINI_API_KEY detected in server environment.'
+      }
+    };
+  }
+
   const style = styleInstruction || 
     "Nonchalant, casual streamer co-host, relaxed and effortless cadence, understated and casual, matching natural chill streamer banter, unbothered, cool, and conversational without being overly bright, cheerleading, or chirpy.";
 
@@ -161,13 +201,21 @@ export async function handleTTS(
     } catch (err: any) {
       console.warn(`[Server TTS] Attempt with ${model} failed:`, err?.message || err);
       lastError = err;
+      if (isApiKeyError(err)) {
+        break; // Fast fail if API key itself is unauthorized
+      }
     }
   }
 
+  const isKeyError = isApiKeyError(lastError);
   console.warn("[Server TTS] All TTS model attempts failed, returning silent audio fallback:", lastError?.message || lastError);
   return {
     audioBase64: createSilentWavBase64(),
-    mimeType: 'audio/wav'
+    mimeType: 'audio/wav',
+    apiKeyError: isKeyError ? {
+      type: 'invalid',
+      message: lastError?.message || 'Gemini API key is invalid or rejected.'
+    } : undefined
   };
 }
 
@@ -201,6 +249,24 @@ Output a JSON object with:
 2. 'deliveryStyle': a concise 10-15 word description of their typical vocal cadence, delivery, demeanor, and banter style (e.g. "Relaxed, deadpan humor with steady, nonchalant conversational cadence", "High-energy quick banter with witty sarcastic comebacks", "Calm, low-key observational humor"). This will be used to calibrate an AI co-host's TTS cadence and nonchalance to match the streamer and avoid being overly bright or chirpy.`;
 
   const userContent = { role: 'user', parts: [{ text: prompt }] };
+  
+  if (!isApiKeyConfigured()) {
+    console.warn("[Server] No Gemini API key configured for initialize stream.");
+    return {
+      channelName: channelNameFromId,
+      deliveryStyle: "Relaxed, deadpan humor with steady, nonchalant conversational cadence",
+      groundSearchSuccessful: false,
+      apiKeyError: {
+        type: 'missing',
+        message: 'No GEMINI_API_KEY detected in server environment.'
+      },
+      userContent,
+      modelContent: {
+        role: "model",
+        parts: [{ text: JSON.stringify({ channelName: channelNameFromId, deliveryStyle: "Relaxed, deadpan humor with steady, nonchalant conversational cadence" }) }]
+      }
+    };
+  }
   
   try {
     let response: any = null;
@@ -294,10 +360,16 @@ Output a JSON object with:
     console.warn("[Server] InitializeStream fallback profile activated:", error?.message || error);
     const channelName = channelNameFromId;
     const deliveryStyle = "Relaxed, deadpan humor with steady, nonchalant conversational cadence";
+    const keyError = isApiKeyError(error);
 
     return {
       channelName,
       deliveryStyle,
+      groundSearchSuccessful: false,
+      apiKeyError: keyError ? {
+        type: 'invalid',
+        message: error?.message || 'Gemini API key is invalid or rejected.'
+      } : undefined,
       userContent,
       modelContent: {
         role: "model",
@@ -374,6 +446,24 @@ export async function handleGetTopics(
     styleInstruction = "A mix of natural follow-ups to the current topic and broader channel-related themes.";
   } else if (style === 'abstract') {
     styleInstruction = "Fun pivots, new tangents, or broader questions to completely refresh the conversation.";
+  }
+
+  if (!isApiKeyConfigured()) {
+    console.warn("[Server] No Gemini API key configured for dialogue generation.");
+    const fallback = generateFallbackTopics(style, transcript, channelDeliveryStyle);
+    return {
+      summary: fallback.summary,
+      topics: fallback.topics,
+      apiKeyError: {
+        type: 'missing',
+        message: 'No GEMINI_API_KEY detected in server environment.'
+      },
+      userContentForHistory: { role: 'user', parts: [{ text: "Stream dialogue update" }] },
+      modelContentForHistory: {
+        role: "model",
+        parts: [{ text: JSON.stringify(fallback) }]
+      }
+    };
   }
 
   let responseCountStr = "3";
@@ -463,10 +553,15 @@ Return JSON with 'summary' (string) and 'topics' (array of objects with optional
   } catch (error: any) {
     console.warn("[Server] GetTopics API fallback activated:", error?.message || error);
     const fallback = generateFallbackTopics(style, transcript, channelDeliveryStyle);
+    const keyError = isApiKeyError(error);
 
     return {
       summary: fallback.summary,
       topics: fallback.topics,
+      apiKeyError: keyError ? {
+        type: 'invalid',
+        message: error?.message || 'Gemini API key is invalid or rejected.'
+      } : undefined,
       userContentForHistory: { role: 'user', parts: [{ text: promptText }] },
       modelContentForHistory: {
         role: "model",

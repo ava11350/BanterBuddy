@@ -4,6 +4,45 @@ export type TTSModelOption = 'gemini-3.8-flash-lite-tts' | 'gemini-3.8-flash-tts
 
 export interface TopicSuggestion { quote?: string; text: string; }
 
+export type ApiKeyErrorInfo = {
+  type: 'missing' | 'invalid' | 'quota' | 'general';
+  message: string;
+};
+
+type ApiKeyErrorListener = (error: ApiKeyErrorInfo | null) => void;
+const apiKeyErrorListeners = new Set<ApiKeyErrorListener>();
+
+export function subscribeApiKeyError(listener: ApiKeyErrorListener) {
+  apiKeyErrorListeners.add(listener);
+  return () => { apiKeyErrorListeners.delete(listener); };
+}
+
+export function notifyApiKeyError(error: ApiKeyErrorInfo | null) {
+  apiKeyErrorListeners.forEach(listener => {
+    try { listener(error); } catch (e) { console.error(e); }
+  });
+}
+
+export async function checkApiKeyStatus(verify = false): Promise<ApiKeyErrorInfo | null> {
+  try {
+    const res = await fetch(`/api/gemini/status${verify ? '?verify=true' : ''}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || (data && !data.ok)) {
+      const err: ApiKeyErrorInfo = data?.apiKeyError || {
+        type: 'general',
+        message: 'Could not connect to Gemini API service.'
+      };
+      notifyApiKeyError(err);
+      return err;
+    }
+    notifyApiKeyError(null);
+    return null;
+  } catch (e: any) {
+    console.debug("[Client] API status check notice:", e);
+    return null;
+  }
+}
+
 export async function generateTTSAudio(
   text: string, 
   voiceName: string = 'Aoede',
@@ -30,7 +69,12 @@ export async function generateTTSAudio(
       return { audioUrl: null };
     }
 
-    const { audioBase64 } = await response.json();
+    const data = await response.json().catch(() => ({}));
+    if (data?.apiKeyError) {
+      notifyApiKeyError(data.apiKeyError);
+    }
+
+    const audioBase64 = data?.audioBase64;
     if (!audioBase64) {
       return { audioUrl: null };
     }
@@ -125,6 +169,9 @@ export class StreamAnalyzerSession {
       }
 
       const data = await response.json();
+      if (data.apiKeyError) {
+        notifyApiKeyError(data.apiKeyError);
+      }
       if (data.userContent) {
         this.history.push(data.userContent);
       }
@@ -225,6 +272,9 @@ export class StreamAnalyzerSession {
       }
 
       const data = await response.json();
+      if (data.apiKeyError) {
+        notifyApiKeyError(data.apiKeyError);
+      }
 
       if (data.userContentForHistory) {
         this.history.push(data.userContentForHistory);

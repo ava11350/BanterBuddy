@@ -4,7 +4,17 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { StreamAnalyzerSession, SuggestionStyle, GeminiModelPreference, TopicSuggestion, generateTTSAudio, TTSModelOption } from './lib/gemini';
+import { 
+  StreamAnalyzerSession, 
+  SuggestionStyle, 
+  GeminiModelPreference, 
+  TopicSuggestion, 
+  generateTTSAudio, 
+  TTSModelOption,
+  ApiKeyErrorInfo,
+  subscribeApiKeyError,
+  checkApiKeyStatus
+} from './lib/gemini';
 import { checkIfLiveDirectly } from './lib/youtube';
 import { 
   Sparkles, 
@@ -22,7 +32,9 @@ import {
   X,
   Zap,
   RotateCcw,
-  Trash2
+  Trash2,
+  AlertTriangle,
+  CheckCircle2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -141,6 +153,40 @@ export default function App() {
   const transcriptRef = useRef<string>("");
   const speechRecognitionRef = useRef<any>(null);
   const analyzerRef = useRef<StreamAnalyzerSession | null>(null);
+
+  // API Key Error State & Transparency Modal
+  const [apiKeyError, setApiKeyError] = useState<ApiKeyErrorInfo | null>(null);
+  const [isApiKeyDismissed, setIsApiKeyDismissed] = useState(false);
+  const [isRecheckingKey, setIsRecheckingKey] = useState(false);
+  const [recheckSuccess, setRecheckSuccess] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = subscribeApiKeyError((err) => {
+      setApiKeyError(err);
+      if (err) {
+        setIsApiKeyDismissed(false);
+      }
+    });
+
+    // Check API key configuration on initial mount
+    checkApiKeyStatus();
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleRetryApiKey = async () => {
+    setIsRecheckingKey(true);
+    setRecheckSuccess(false);
+    const err = await checkApiKeyStatus(true);
+    setIsRecheckingKey(false);
+    if (!err) {
+      setRecheckSuccess(true);
+      setTimeout(() => {
+        setIsApiKeyDismissed(true);
+        setRecheckSuccess(false);
+      }, 1400);
+    }
+  };
 
   // Persistence Effects
   useEffect(() => { 
@@ -642,6 +688,85 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-orange-500/30">
+      {/* API Key Error Dialogue Box */}
+      <AnimatePresence>
+        {apiKeyError && !isApiKeyDismissed && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              className="w-full max-w-md bg-neutral-900 border border-red-500/30 rounded-2xl p-6 shadow-2xl shadow-red-500/10 relative overflow-hidden"
+            >
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-red-500 via-orange-500 to-red-500" />
+              
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 flex-shrink-0">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-white">
+                      {apiKeyError.type === 'missing' ? 'Gemini API Key Required' : 'Gemini API Key Error'}
+                    </h3>
+                    <p className="text-xs text-red-400/90 font-medium">Authentication Notice</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setIsApiKeyDismissed(true)}
+                  className="p-1.5 text-white/40 hover:text-white rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                  title="Dismiss dialogue"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <p className="text-xs text-white/70 leading-relaxed mb-4">
+                {apiKeyError.type === 'missing'
+                  ? "BanterBuddy requires a Google Gemini API key to personalize dialogue, perform live stream analysis, and synthesize co-host speech. No active key was detected in the server environment."
+                  : "The configured Gemini API key failed or was rejected by Google. Co-host capabilities cannot generate responses until a valid key is provided."}
+              </p>
+
+              {apiKeyError.message && (
+                <div className="bg-black/60 border border-white/10 rounded-xl p-3 mb-4 text-xs font-mono text-white/60 break-words">
+                  <span className="text-red-400 font-semibold mr-1.5">Details:</span>
+                  {apiKeyError.message}
+                </div>
+              )}
+
+              <div className="bg-white/[0.03] border border-white/5 rounded-xl p-3 mb-5 space-y-1.5 text-[11px] text-white/50">
+                <div className="font-semibold text-white/80 text-xs mb-1">How to configure:</div>
+                <p><span className="text-white/70 font-medium">Self-hosted / Local:</span> Add <code className="text-orange-300 bg-white/5 px-1 py-0.5 rounded font-mono">GEMINI_API_KEY=your_key</code> to your <code className="text-white/70 font-mono">.env</code> file.</p>
+                <p><span className="text-white/70 font-medium">AI Studio:</span> Open <span className="text-white/70 font-medium">Settings &gt; Secrets</span> and ensure <code className="text-orange-300 font-mono">GEMINI_API_KEY</code> is attached.</p>
+                <p><span className="text-white/70 font-medium">Get a key:</span> Free & paid keys available at <span className="text-orange-400">aistudio.google.com</span>.</p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleRetryApiKey}
+                  disabled={isRecheckingKey || recheckSuccess}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium text-xs bg-orange-500 hover:bg-orange-600 text-white transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  {isRecheckingKey ? (
+                    <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying Key...</>
+                  ) : recheckSuccess ? (
+                    <><CheckCircle2 className="w-3.5 h-3.5 text-green-300" /> Key Verified!</>
+                  ) : (
+                    <><RefreshCw className="w-3.5 h-3.5" /> Re-check API Key</>
+                  )}
+                </button>
+                <button
+                  onClick={() => setIsApiKeyDismissed(true)}
+                  className="px-4 py-2.5 rounded-xl text-xs font-medium text-white/60 hover:text-white bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <header className="border-b border-white/10 bg-black/50 backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -653,6 +778,17 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-4">
+            {apiKeyError && (
+              <button 
+                onClick={() => setIsApiKeyDismissed(false)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/15 border border-red-500/30 text-red-400 rounded-full text-xs hover:bg-red-500/25 transition-all cursor-pointer animate-pulse"
+                title="Gemini API Key issue detected. Click to view details."
+              >
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span className="font-medium">API Key Issue</span>
+              </button>
+            )}
+
             <div className="flex items-center gap-2 text-sm text-white/60 bg-white/5 px-3 py-1.5 rounded-full" title="TTS Voice Profile">
               <Volume2 className="w-4 h-4 text-orange-400" />
               <select 
