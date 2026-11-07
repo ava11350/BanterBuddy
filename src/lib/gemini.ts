@@ -126,6 +126,39 @@ export async function generateTTSAudio(
   }
 }
 
+export function generateClientFallbackTopics(style: SuggestionStyle): { summary: string; topics: TopicSuggestion[] } {
+  const personalized = [
+    { text: "Honestly though, what's your take on that last move?" },
+    { text: "Wait, hear me out — is that actually the meta right now?" },
+    { text: "Chat was definitely reacting to that play." },
+    { text: "That setup felt smooth. Are you sticking with it?" },
+    { text: "Quick read: are you feeling confident about this match?" },
+    { text: "Honestly, that was way closer than it looked." }
+  ];
+  const balanced = [
+    { text: "I don't know, could definitely go either way." },
+    { text: "Fair point. Where do you think we take this next?" },
+    { text: "Wait, did you see how fast that shifted?" },
+    { text: "That reminds me of your earlier run. Huge difference." },
+    { text: "Honestly, that was an unexpected turn of events." },
+    { text: "How are we feeling about the pace so far?" }
+  ];
+  const abstract = [
+    { text: "Completely off-topic, but what's your top moment this week?" },
+    { text: "Hot take time: what's the most overrated thing right now?" },
+    { text: "Quick pivot — if you had to change the stream goal right now?" },
+    { text: "Wait, imagine if the devs actually patched that tomorrow." },
+    { text: "Random question for chat: best comfort food while gaming?" },
+    { text: "If you could instantly master one mechanic, what is it?" }
+  ];
+  const pool = style === 'personalized' ? personalized : style === 'abstract' ? abstract : balanced;
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+  return {
+    summary: "Active stream dialogue and chat engagement.",
+    topics: shuffled.slice(0, 3)
+  };
+}
+
 export class StreamAnalyzerSession {
   private history: any[] = [];
   private streamIdentifier: string;
@@ -246,14 +279,19 @@ export class StreamAnalyzerSession {
     intervalMinutes: number, 
     audioBase64?: string, 
     audioMimeType?: string, 
-    modelPreference: GeminiModelPreference = 'flash'
+    modelPreference: GeminiModelPreference = 'flash',
+    retryAttempt: number = 0
   ): Promise<{summary?: string, topics: TopicSuggestion[]}> {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 22000);
+
       const response = await fetch('/api/gemini/analyze/topics', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: controller.signal,
         body: JSON.stringify({
           style,
           transcript,
@@ -266,9 +304,19 @@ export class StreamAnalyzerSession {
         }),
       });
 
+      clearTimeout(timeoutId);
+
       if (!response.ok) {
-        console.warn("[Client] Could not fetch topics from server, using fallback");
-        return { topics: [] };
+        console.warn("[Client] Analyze topics endpoint returned status:", response.status);
+        // If server is waking up or recovering (502, 503, 504), pause 1.5s and retry at most once
+        if (response.status >= 500 && retryAttempt < 1) {
+          await new Promise(r => setTimeout(r, 1500));
+          return await this.getTopics(style, transcript, intervalMinutes, undefined, undefined, modelPreference, retryAttempt + 1);
+        }
+        if (audioBase64 && retryAttempt < 1) {
+          return await this.getTopics(style, transcript, intervalMinutes, undefined, undefined, modelPreference, retryAttempt + 1);
+        }
+        return generateClientFallbackTopics(style);
       }
 
       const data = await response.json();
@@ -276,24 +324,33 @@ export class StreamAnalyzerSession {
         notifyApiKeyError(data.apiKeyError);
       }
 
-      if (data.userContentForHistory) {
+      // Only push if both user and model turns exist to maintain strict alternation
+      if (data.userContentForHistory && data.modelContentForHistory) {
         this.history.push(data.userContentForHistory);
-      }
-      if (data.modelContentForHistory) {
         this.history.push(data.modelContentForHistory);
       }
 
       this.pruneHistory();
 
+      const finalTopics = Array.isArray(data.topics) && data.topics.length > 0 
+        ? data.topics 
+        : generateClientFallbackTopics(style).topics;
+
       return {
-        summary: data.summary,
-        topics: data.topics || [],
+        summary: data.summary || "Active stream dialogue.",
+        topics: finalTopics,
       };
     } catch (e: any) {
-      if (e?.name !== 'AbortError') {
-        console.debug("[Client] getTopics notice:", e?.message || e);
+      if (retryAttempt < 1) {
+        console.warn("[Client] Connection notice on dialogue generation, retrying once with stream context:", e?.message || e);
+        try {
+          await new Promise(r => setTimeout(r, 1200));
+          return await this.getTopics(style, transcript, intervalMinutes, undefined, undefined, modelPreference, retryAttempt + 1);
+        } catch (retryErr) {
+          console.warn("[Client] Context retry also encountered notice, activating local fallback:", retryErr);
+        }
       }
-      return { topics: [] };
+      return generateClientFallbackTopics(style);
     }
   }
 }

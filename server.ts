@@ -13,6 +13,14 @@ import {
   isApiKeyError
 } from "./server/geminiService";
 
+// Guard process against unexpected stream errors or unhandled rejections to prevent server eviction
+process.on("unhandledRejection", (reason, promise) => {
+  console.warn("[Server Guard] Unhandled Rejection at:", promise, "reason:", reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("[Server Guard] Guarded uncaught exception to prevent exit:", error?.message || error);
+});
+
 async function startServer() {
   const app = express();
   const PORT = 3000;

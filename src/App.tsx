@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   StreamAnalyzerSession, 
   SuggestionStyle, 
@@ -34,7 +34,11 @@ import {
   RotateCcw,
   Trash2,
   AlertTriangle,
-  CheckCircle2
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Sliders,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -140,6 +144,7 @@ export default function App() {
   const [isMicEnabled, setIsMicEnabled] = useState(false);
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('default');
+  const [isAudioSettingsOpen, setIsAudioSettingsOpen] = useState(false);
 
   const [elapsedSeconds, setElapsedSeconds] = useState(() => Number(localStorage.getItem('banterBuddy_elapsedSeconds')) || 0);
   const [sliderValue, setSliderValue] = useState(0);
@@ -150,9 +155,11 @@ export default function App() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const previousCycleBlobRef = useRef<Blob | null>(null);
   const transcriptRef = useRef<string>("");
   const speechRecognitionRef = useRef<any>(null);
   const analyzerRef = useRef<StreamAnalyzerSession | null>(null);
+  const lastHeartbeatRef = useRef<number>(Date.now());
 
   // API Key Error State & Transparency Modal
   const [apiKeyError, setApiKeyError] = useState<ApiKeyErrorInfo | null>(null);
@@ -216,8 +223,223 @@ export default function App() {
     setSecondsUntilNext(intervalMinutes * 60);
   }, [intervalMinutes]);
 
+  const [speechState, setSpeechState] = useState<'idle' | 'listening' | 'reconnecting' | 'restricted' | 'safari-unsupported' | 'unsupported'>('idle');
+  const [speechCooldown, setSpeechCooldown] = useState<number>(0);
+  const [recentSpeechSnippet, setRecentSpeechSnippet] = useState<string>('');
+
+  const speechStateRef = useRef<'idle' | 'listening' | 'reconnecting' | 'restricted' | 'safari-unsupported' | 'unsupported'>('idle');
+  const isMicEnabledRef = useRef<boolean>(false);
+  const speechCooldownTimerRef = useRef<any>(null);
+  const speechRestartTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    speechStateRef.current = speechState;
+  }, [speechState]);
+
+  useEffect(() => {
+    isMicEnabledRef.current = isMicEnabled;
+  }, [isMicEnabled]);
+
+  const stopSpeechRecognition = useCallback(() => {
+    if (speechCooldownTimerRef.current) {
+      clearInterval(speechCooldownTimerRef.current);
+      speechCooldownTimerRef.current = null;
+    }
+    if (speechRestartTimeoutRef.current) {
+      clearTimeout(speechRestartTimeoutRef.current);
+      speechRestartTimeoutRef.current = null;
+    }
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.onresult = null;
+        speechRecognitionRef.current.onerror = null;
+        speechRecognitionRef.current.onend = null;
+        speechRecognitionRef.current.abort();
+      } catch (_) {}
+      speechRecognitionRef.current = null;
+    }
+    setSpeechState('idle');
+    speechStateRef.current = 'idle';
+    setSpeechCooldown(0);
+  }, []);
+
+  const initSpeechRecognition = useCallback((force = false) => {
+    if (speechCooldownTimerRef.current) {
+      clearInterval(speechCooldownTimerRef.current);
+      speechCooldownTimerRef.current = null;
+    }
+    if (speechRestartTimeoutRef.current) {
+      clearTimeout(speechRestartTimeoutRef.current);
+      speechRestartTimeoutRef.current = null;
+    }
+    setSpeechCooldown(0);
+
+    if (!isMicEnabledRef.current && !force) {
+      setSpeechState('idle');
+      speechStateRef.current = 'idle';
+      return;
+    }
+
+    const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    if (isSafari) {
+      console.info("[Speech Transcriber] Safari detected. Safari WebKit does not support continuous speech streaming. Direct 30s audio recording remains active.");
+      setSpeechState('safari-unsupported');
+      speechStateRef.current = 'safari-unsupported';
+      return;
+    }
+
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setSpeechState('unsupported');
+      speechStateRef.current = 'unsupported';
+      return;
+    }
+
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.onresult = null;
+        speechRecognitionRef.current.onerror = null;
+        speechRecognitionRef.current.onend = null;
+        speechRecognitionRef.current.abort();
+      } catch (_) {}
+      speechRecognitionRef.current = null;
+    }
+
+    let consecutiveErrors = 0;
+
+    try {
+      const recognition = new SpeechRec();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onresult = (event: any) => {
+        consecutiveErrors = 0;
+        let currentFinal = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            currentFinal += event.results[i][0].transcript + ' ';
+          }
+        }
+        if (currentFinal) {
+          transcriptRef.current += currentFinal;
+          const trimmed = currentFinal.trim();
+          setRecentSpeechSnippet(prev => {
+            const combined = prev ? `${prev} ${trimmed}` : trimmed;
+            return combined.length > 80 ? '...' + combined.slice(-75) : combined;
+          });
+        }
+        if (speechStateRef.current !== 'listening') {
+          setSpeechState('listening');
+          speechStateRef.current = 'listening';
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        if (event.error === 'no-speech') return;
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          if (isSafari) {
+            console.info("[Speech Transcriber] Safari does not support continuous Web Speech API. Direct 30s stream audio capture continues.");
+            setSpeechState('safari-unsupported');
+            speechStateRef.current = 'safari-unsupported';
+          } else {
+            console.info("[Speech Transcriber] Web Speech API restricted in current window/iframe. Direct 30s stream audio capture remains active.");
+            setSpeechState('restricted');
+            speechStateRef.current = 'restricted';
+          }
+          recognition.onend = null;
+          try { recognition.abort(); } catch (_) {}
+          return;
+        }
+
+        consecutiveErrors++;
+        console.warn(`[Speech Recognition] Drop notice (drop count: ${consecutiveErrors}):`, event.error);
+
+        // When drops occur repeatedly (e.g. Chrome's Web Speech socket died after long stream)
+        if (consecutiveErrors >= 3) {
+          recognition.onend = null;
+          try { recognition.abort(); } catch (_) {}
+          speechRecognitionRef.current = null;
+
+          setSpeechState('reconnecting');
+          speechStateRef.current = 'reconnecting';
+          setSpeechCooldown(15);
+
+          let remaining = 15;
+          speechCooldownTimerRef.current = setInterval(() => {
+            remaining -= 1;
+            setSpeechCooldown(remaining);
+            if (remaining <= 0) {
+              if (speechCooldownTimerRef.current) {
+                clearInterval(speechCooldownTimerRef.current);
+                speechCooldownTimerRef.current = null;
+              }
+              if (isMicEnabledRef.current) {
+                console.info("[Speech Recognition] Cooldown complete, attempting fresh connection...");
+                initSpeechRecognition(true);
+              } else {
+                setSpeechState('idle');
+                speechStateRef.current = 'idle';
+              }
+            }
+          }, 1000);
+        }
+      };
+
+      recognition.onend = () => {
+        if (speechStateRef.current === 'reconnecting' || speechStateRef.current === 'restricted' || speechStateRef.current === 'safari-unsupported' || !isMicEnabledRef.current) {
+          return;
+        }
+
+        const delay = consecutiveErrors > 0 ? 2500 : 800;
+        if (speechRestartTimeoutRef.current) clearTimeout(speechRestartTimeoutRef.current);
+        speechRestartTimeoutRef.current = setTimeout(() => {
+          if (isMicEnabledRef.current && speechStateRef.current !== 'reconnecting' && speechStateRef.current !== 'restricted') {
+            try {
+              recognition.start();
+              setSpeechState('listening');
+              speechStateRef.current = 'listening';
+            } catch (e) {
+              // If start throws because socket invalidated, recreate fresh instance
+              initSpeechRecognition(true);
+            }
+          }
+        }, delay);
+      };
+
+      recognition.start();
+      speechRecognitionRef.current = recognition;
+      setSpeechState('listening');
+      speechStateRef.current = 'listening';
+    } catch (err) {
+      console.warn("[Speech Recognition] Failed to initialize:", err);
+      setSpeechState('reconnecting');
+      speechStateRef.current = 'reconnecting';
+      setSpeechCooldown(10);
+      let remaining = 10;
+      speechCooldownTimerRef.current = setInterval(() => {
+        remaining -= 1;
+        setSpeechCooldown(remaining);
+        if (remaining <= 0) {
+          if (speechCooldownTimerRef.current) {
+            clearInterval(speechCooldownTimerRef.current);
+            speechCooldownTimerRef.current = null;
+          }
+          if (isMicEnabledRef.current) {
+            initSpeechRecognition(true);
+          }
+        }
+      }, 1000);
+    }
+  }, []);
+
+  const handleManualRestartSpeech = () => {
+    initSpeechRecognition(true);
+  };
+
   useEffect(() => {
     let active = true;
+    let cycleInterval: any = null;
+    let settleTimeout: any = null;
     if (isMicEnabled) {
       const constraints: MediaStreamConstraints = { 
         audio: {
@@ -238,70 +460,51 @@ export default function App() {
           mediaRecorderRef.current = mediaRecorder;
           
           mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) {
-              if (audioChunksRef.current.length === 0) {
-                // Preserve the initialization chunk (header) at index 0
-                audioChunksRef.current.push(e.data);
-              } else {
-                audioChunksRef.current.push(e.data);
-                // Keep header at index 0, plus the last ~60 seconds of audio
-                if (audioChunksRef.current.length > 61) {
-                  audioChunksRef.current.splice(1, 1);
-                }
-              }
+            if (e.data && e.data.size > 0) {
+              audioChunksRef.current.push(e.data);
+            }
+            // Media-thread heartbeat: fires reliably every 25s even when tab is backgrounded
+            const now = Date.now();
+            if (now - lastHeartbeatRef.current > 25000) {
+              lastHeartbeatRef.current = now;
+              fetch('/api/health').catch(() => {});
+            }
+          };
+
+          mediaRecorder.onstop = () => {
+            if (audioChunksRef.current.length >= 5) {
+              try {
+                previousCycleBlobRef.current = new Blob(audioChunksRef.current, { 
+                  type: mediaRecorder.mimeType || 'audio/webm' 
+                });
+              } catch (e) {}
+            }
+            audioChunksRef.current = [];
+            if (active && isMicEnabled && mediaRecorder.state === 'inactive') {
+              try {
+                mediaRecorder.start(1000);
+              } catch (e) {}
             }
           };
           
           mediaRecorder.start(1000); // 1 second chunks
 
-          // Speech Recognition Setup
-          const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-          if (SpeechRecognition) {
-            try {
-              const recognition = new SpeechRecognition();
-              recognition.continuous = true;
-              recognition.interimResults = true;
-
-              recognition.onresult = (event: any) => {
-                let currentFinal = '';
-                for (let i = event.resultIndex; i < event.results.length; ++i) {
-                  if (event.results[i].isFinal) {
-                    currentFinal += event.results[i][0].transcript + ' ';
-                  }
-                }
-                if (currentFinal) {
-                  transcriptRef.current += currentFinal;
-                }
-              };
-
-              let isSpeechBlocked = false;
-
-              recognition.onerror = (event: any) => {
-                if (event.error === 'no-speech') {
-                  // Silent restart is naturally handled by onend
-                  return;
-                }
-                if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-                  isSpeechBlocked = true;
-                  recognition.onend = null;
-                  console.warn("Speech recognition unavailable in current browser context:", event.error);
-                  return;
-                }
-                console.warn("Speech recognition notice:", event.error);
-              };
-
-              recognition.onend = () => {
-                if (active && isMicEnabled && !isSpeechBlocked) {
-                  try { recognition.start(); } catch (e) {}
-                }
-              };
-
-              recognition.start();
-              speechRecognitionRef.current = recognition;
-            } catch (err) {
-              console.warn("Could not start browser speech recognition:", err);
+          // Clean rotation every 30 seconds as requested by streamer
+          cycleInterval = setInterval(() => {
+            if (!active) return;
+            if (mediaRecorder.state === 'recording') {
+              try {
+                mediaRecorder.stop();
+              } catch (e) {}
             }
-          }
+          }, 30000);
+
+          // Allow audio hardware lock 350ms to settle after permission grant before starting speech recognition
+          settleTimeout = setTimeout(() => {
+            if (active && isMicEnabledRef.current) {
+              initSpeechRecognition();
+            }
+          }, 350);
 
           // Fetch devices now that we have permission
           navigator.mediaDevices.enumerateDevices().then(devices => {
@@ -313,33 +516,31 @@ export default function App() {
         .catch(err => {
           console.error("Error accessing microphone:", err);
           setIsMicEnabled(false);
+          stopSpeechRecognition();
         });
     } else {
+      if (settleTimeout) clearTimeout(settleTimeout);
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
         mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
       }
       mediaRecorderRef.current = null;
       audioChunksRef.current = [];
-
-      if (speechRecognitionRef.current) {
-        speechRecognitionRef.current.stop();
-        speechRecognitionRef.current = null;
-      }
+      previousCycleBlobRef.current = null;
+      stopSpeechRecognition();
     }
     
     return () => {
       active = false;
+      if (settleTimeout) clearTimeout(settleTimeout);
+      if (cycleInterval) clearInterval(cycleInterval);
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
         mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
       }
-      if (speechRecognitionRef.current) {
-        speechRecognitionRef.current.stop();
-        speechRecognitionRef.current = null;
-      }
+      stopSpeechRecognition();
     };
-  }, [isMicEnabled, selectedDeviceId]);
+  }, [isMicEnabled, selectedDeviceId, initSpeechRecognition, stopSpeechRecognition]);
 
   useEffect(() => {
     if (uplinkStatus !== 'connected') {
@@ -359,6 +560,19 @@ export default function App() {
     const intervalId = setInterval(checkLiveStatus, 15 * 60 * 1000);
     return () => clearInterval(intervalId);
   }, [uplinkStatus, streamInput]);
+
+  // Server keep-alive heartbeat: prevents Cloud Run container scale-to-zero or idle eviction during live streams
+  useEffect(() => {
+    if (uplinkStatus !== 'connected') return;
+
+    const pingServer = () => {
+      fetch('/api/health').catch(() => {});
+    };
+
+    // Ping every 25 seconds to keep the Cloud Run container warm and active throughout the 10-minute intervals
+    const keepAliveId = setInterval(pingServer, 25000);
+    return () => clearInterval(keepAliveId);
+  }, [uplinkStatus]);
 
   useEffect(() => {
     if (uplinkStatus !== 'connected' || isPaused) return;
@@ -474,29 +688,49 @@ export default function App() {
     stateRef.current.isAnalyzing = true;
     secondsUntilNextRef.current = stateRef.current.intervalMinutes * 60;
     setSecondsUntilNext(stateRef.current.intervalMinutes * 60);
+
+    // Safety watchdog: ensure isAnalyzing can NEVER stay stuck as true for more than 30s
+    const watchdogId = setTimeout(() => {
+      if (stateRef.current.isAnalyzing) {
+        console.warn("[Watchdog] Analysis exceeded safety threshold of 30s, releasing analyze lock");
+        setIsAnalyzing(false);
+        stateRef.current.isAnalyzing = false;
+        secondsUntilNextRef.current = stateRef.current.intervalMinutes * 60;
+        setSecondsUntilNext(stateRef.current.intervalMinutes * 60);
+      }
+    }, 30000);
     
     let audioBase64: string | undefined;
     let audioMimeType: string | undefined;
 
-    if (stateRef.current.isMicEnabled && audioChunksRef.current.length > 0) {
+    if (stateRef.current.isMicEnabled) {
       try {
-        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current?.mimeType || 'audio/webm' });
-        audioMimeType = audioBlob.type;
-        
-        // Convert blob to base64
-        audioBase64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            if (typeof reader.result === 'string') {
-              const base64data = reader.result.split(',')[1];
-              resolve(base64data);
-            } else {
-              reject(new Error("Failed to read audio blob"));
-            }
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(audioBlob);
-        });
+        let audioBlob: Blob | null = null;
+        if (audioChunksRef.current.length >= 10) {
+          audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current?.mimeType || 'audio/webm' });
+        } else if (previousCycleBlobRef.current) {
+          audioBlob = previousCycleBlobRef.current;
+        } else if (audioChunksRef.current.length > 0) {
+          audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current?.mimeType || 'audio/webm' });
+        }
+
+        if (audioBlob && audioBlob.size > 0) {
+          audioMimeType = audioBlob.type || 'audio/webm';
+          // Convert blob to base64
+          audioBase64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (typeof reader.result === 'string') {
+                const base64data = reader.result.split(',')[1];
+                resolve(base64data);
+              } else {
+                reject(new Error("Failed to read audio blob"));
+              }
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(audioBlob);
+          });
+        }
       } catch (err) {
         console.error("Failed to process audio for analysis", err);
       }
@@ -516,14 +750,23 @@ export default function App() {
       );
       setAiHistory(analyzerRef.current.getHistory());
       if (result.topics && result.topics.length > 0) {
-        setTopicGroups(prev => [
-          { id: Date.now().toString(), timestamp: new Date(), elapsedAt: elapsedSecondsRef.current, topics: result.topics },
-          ...prev
-        ]);
+        const newGroup = { 
+          id: Date.now().toString(), 
+          timestamp: new Date(), 
+          elapsedAt: elapsedSecondsRef.current, 
+          topics: result.topics 
+        };
+        setTopicGroups(prev => [newGroup, ...prev]);
+        
+        // Auto-advance timeline slider if streamer is watching live so fresh cards are immediately visible
+        if (isAtLatestRef.current) {
+          setSliderValue(elapsedSecondsRef.current);
+        }
       }
     } catch (error) {
       console.error("Analysis failed", error);
     } finally {
+      clearTimeout(watchdogId);
       setIsAnalyzing(false);
       stateRef.current.isAnalyzing = false;
       secondsUntilNextRef.current = stateRef.current.intervalMinutes * 60;
@@ -1006,10 +1249,18 @@ export default function App() {
 
           <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
             <div className="flex items-center justify-between mb-2">
-              <h2 className="text-sm font-medium text-white/50 uppercase tracking-wider">Audio Context</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-medium text-white/50 uppercase tracking-wider">Audio Context</h2>
+                {isMicEnabled && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Mic Stream Live
+                  </span>
+                )}
+              </div>
               <button
                 onClick={() => setIsMicEnabled(!isMicEnabled)}
-                className={`p-2 rounded-lg transition-colors ${
+                className={`p-2 rounded-lg transition-colors cursor-pointer ${
                   isMicEnabled ? 'bg-red-500/20 text-red-500 hover:bg-red-500/30' : 'bg-white/10 text-white/70 hover:text-white hover:bg-white/20'
                 }`}
                 title={isMicEnabled ? "Disable Microphone" : "Enable Microphone"}
@@ -1023,21 +1274,77 @@ export default function App() {
                 : "Enable microphone to allow BanterBuddy to listen to your stream and provide more relevant dialogue."}
             </p>
 
-            {isMicEnabled && audioDevices.length > 0 && (
+            {isMicEnabled && (
               <div className="mt-4 pt-4 border-t border-white/10">
-                <label className="block text-xs text-white/50 mb-2">Audio Input Device</label>
-                <select 
-                  value={selectedDeviceId}
-                  onChange={(e) => setSelectedDeviceId(e.target.value)}
-                  className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50"
-                >
-                  <option value="default">Default System Device</option>
-                  {audioDevices.map(device => (
-                    <option key={device.deviceId} value={device.deviceId}>
-                      {device.label || `Microphone ${device.deviceId.slice(0, 5)}...`}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-white/50">Speech Transcriber</span>
+                    {speechState === 'listening' && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Listening
+                      </span>
+                    )}
+                    {speechState === 'reconnecting' && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                        Cooldown {speechCooldown}s
+                      </span>
+                    )}
+                    {speechState === 'safari-unsupported' && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-300 border border-amber-500/20" title="Safari WebKit does not support the continuous Web Speech API. Direct 30s stream audio capture is actively recording and sent to Gemini.">
+                        <Info className="w-3 h-3 text-amber-400" />
+                        Safari: Direct Audio Stream Active
+                      </span>
+                    )}
+                    {speechState === 'restricted' && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-300 border border-blue-500/20" title="Direct 30s stream audio capture is recording and sent to Gemini. Browser Web Speech is restricted by this window's sandbox.">
+                        <Info className="w-3 h-3 text-blue-400" />
+                        Direct Audio Active (Transcriber Paused)
+                      </span>
+                    )}
+                    {speechState === 'unsupported' && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-zinc-500/10 text-zinc-400 border border-zinc-500/20">
+                        Waveform only
+                      </span>
+                    )}
+                    {speechState === 'idle' && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/5 text-white/50 border border-white/10">
+                        Idle
+                      </span>
+                    )}
+                  </div>
+                  {speechState === 'safari-unsupported' ? (
+                    <span className="text-[10px] text-white/40 font-mono bg-white/[0.04] px-2 py-0.5 rounded border border-white/5">
+                      Direct Audio Only
+                    </span>
+                  ) : (
+                    <button
+                      onClick={handleManualRestartSpeech}
+                      className="flex items-center gap-1 text-[11px] text-white/60 hover:text-white px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 transition-colors border border-white/5 cursor-pointer"
+                      title="Attempt fresh speech recognition session"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>{speechState === 'restricted' ? 'Retry Transcriber' : 'Restart Speech'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {recentSpeechSnippet ? (
+                  <div className="px-2.5 py-1.5 rounded-lg bg-black/30 border border-white/5 text-[11px] text-white/70 italic truncate">
+                    "{recentSpeechSnippet}"
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-white/40 leading-snug">
+                    {speechState === 'safari-unsupported'
+                      ? "Safari does not support continuous speech-to-text. Your microphone is actively recording 30-second audio streams directly for Gemini dialogue!"
+                      : speechState === 'restricted'
+                      ? "Direct 30s stream audio capture is active and powering Gemini. (Browser live speech transcription is restricted by the embedding window's sandbox)."
+                      : speechState === 'reconnecting'
+                      ? `Speech socket resting. Auto-reconnecting in ${speechCooldown}s or click Restart Speech.`
+                      : "Live speech-to-text supplements 30s audio recordings for instant dialogue context."}
+                  </p>
+                )}
               </div>
             )}
 
@@ -1057,48 +1364,100 @@ export default function App() {
               />
             </div>
 
-            {/* TTS Model Selection (Independent from Dialogue Model) */}
+            {/* Collapsible Audio & Voice Settings Section */}
             <div className="mt-4 pt-4 border-t border-white/10">
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-xs text-white/50">TTS Voice Model</label>
-                <span className="text-[10px] text-orange-400 font-mono uppercase tracking-wider">Independent</span>
-              </div>
-              <select 
-                value={ttsModel}
-                onChange={(e) => setTtsModel(e.target.value as TTSModelOption)}
-                className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50"
+              <button
+                type="button"
+                onClick={() => setIsAudioSettingsOpen(!isAudioSettingsOpen)}
+                className="w-full flex items-center justify-between text-left py-1 text-xs font-medium text-white/70 hover:text-white transition-colors cursor-pointer group"
               >
-                <option value="gemini-3.8-flash-lite-tts" className="bg-neutral-900">Gemini 3.8 Flash Lite TTS (Fast & Quota-efficient)</option>
-                <option value="gemini-3.8-flash-tts" className="bg-neutral-900">Gemini 3.8 Flash TTS (High-Fidelity Dialogue)</option>
-              </select>
-              <p className="mt-1.5 text-[11px] text-white/40 leading-snug">
-                Speech audio synthesis is dedicated and runs independently from your dialogue co-host model.
-              </p>
-            </div>
-
-            {/* Demeanor & Delivery Cadence */}
-            <div className="mt-4 pt-4 border-t border-white/10">
-              <label className="block text-xs text-white/50 mb-2">Voice Demeanor & Cadence</label>
-              <select 
-                value={ttsDemeanor}
-                onChange={(e) => setTtsDemeanor(e.target.value as TTSDemeanor)}
-                className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50"
-              >
-                <option value="matched" className="bg-neutral-900">Channel-Matched Nonchalant</option>
-                <option value="nonchalant" className="bg-neutral-900">Chill & Nonchalant</option>
-                <option value="deadpan" className="bg-neutral-900">Deadpan & Dry Wit</option>
-                <option value="casual" className="bg-neutral-900">Casual Banter</option>
-                <option value="lowkey" className="bg-neutral-900">Subdued & Low-Key</option>
-              </select>
-              {channelDeliveryStyle ? (
-                <div className="mt-2 text-[11px] text-orange-300/90 bg-orange-500/10 border border-orange-500/20 px-2.5 py-1.5 rounded-lg leading-snug">
-                  <span className="font-semibold text-orange-200">Channel Cadence:</span> "{channelDeliveryStyle}"
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-3.5 h-3.5 text-orange-400" />
+                  <span>Audio & Voice Settings</span>
+                  <span className="text-[10px] text-white/40 font-normal">
+                    (Device, Voice Model, Demeanor)
+                  </span>
                 </div>
-              ) : (
-                <p className="mt-1.5 text-[11px] text-white/40 leading-snug">
-                  Nonchalant delivery removes overly bright tones to match relaxed streamer banter.
-                </p>
-              )}
+                <div className="flex items-center gap-1 text-[11px] text-white/40 group-hover:text-white/70 transition-colors">
+                  <span>{isAudioSettingsOpen ? 'Hide' : 'Configure'}</span>
+                  {isAudioSettingsOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </div>
+              </button>
+
+              <AnimatePresence>
+                {isAudioSettingsOpen && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden space-y-4 pt-3"
+                  >
+                    {/* Audio Input Device */}
+                    {isMicEnabled && audioDevices.length > 0 && (
+                      <div>
+                        <label className="block text-xs text-white/50 mb-2">Audio Input Device</label>
+                        <select 
+                          value={selectedDeviceId}
+                          onChange={(e) => setSelectedDeviceId(e.target.value)}
+                          className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50"
+                        >
+                          <option value="default">Default System Device</option>
+                          {audioDevices.map(device => (
+                            <option key={device.deviceId} value={device.deviceId}>
+                              {device.label || `Microphone ${device.deviceId.slice(0, 5)}...`}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* TTS Model Selection */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-xs text-white/50">TTS Voice Model</label>
+                        <span className="text-[10px] text-orange-400 font-mono uppercase tracking-wider">Independent</span>
+                      </div>
+                      <select 
+                        value={ttsModel}
+                        onChange={(e) => setTtsModel(e.target.value as TTSModelOption)}
+                        className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50"
+                      >
+                        <option value="gemini-3.8-flash-lite-tts" className="bg-neutral-900">Gemini 3.8 Flash Lite TTS (Fast & Quota-efficient)</option>
+                        <option value="gemini-3.8-flash-tts" className="bg-neutral-900">Gemini 3.8 Flash TTS (High-Fidelity Dialogue)</option>
+                      </select>
+                      <p className="mt-1.5 text-[11px] text-white/40 leading-snug">
+                        Speech audio synthesis is dedicated and runs independently from your dialogue co-host model.
+                      </p>
+                    </div>
+
+                    {/* Demeanor & Delivery Cadence */}
+                    <div>
+                      <label className="block text-xs text-white/50 mb-2">Voice Demeanor & Cadence</label>
+                      <select 
+                        value={ttsDemeanor}
+                        onChange={(e) => setTtsDemeanor(e.target.value as TTSDemeanor)}
+                        className="block w-full px-3 py-2 border border-white/10 rounded-xl bg-black/50 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50"
+                      >
+                        <option value="matched" className="bg-neutral-900">Channel-Matched Nonchalant</option>
+                        <option value="nonchalant" className="bg-neutral-900">Chill & Nonchalant</option>
+                        <option value="deadpan" className="bg-neutral-900">Deadpan & Dry Wit</option>
+                        <option value="casual" className="bg-neutral-900">Casual Banter</option>
+                        <option value="lowkey" className="bg-neutral-900">Subdued & Low-Key</option>
+                      </select>
+                      {channelDeliveryStyle ? (
+                        <div className="mt-2 text-[11px] text-orange-300/90 bg-orange-500/10 border border-orange-500/20 px-2.5 py-1.5 rounded-lg leading-snug">
+                          <span className="font-semibold text-orange-200">Channel Cadence:</span> "{channelDeliveryStyle}"
+                        </div>
+                      ) : (
+                        <p className="mt-1.5 text-[11px] text-white/40 leading-snug">
+                          Nonchalant delivery removes overly bright tones to match relaxed streamer banter.
+                        </p>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Rolling 5-Query TTS Cache */}
@@ -1197,9 +1556,14 @@ export default function App() {
             </div>
             
             <button
-              onClick={triggerAnalysis}
+              onClick={() => {
+                setIsAtLatest(true);
+                isAtLatestRef.current = true;
+                setSliderValue(elapsedSecondsRef.current);
+                triggerAnalysis();
+              }}
               disabled={uplinkStatus !== 'connected' || isAnalyzing}
-              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               <RefreshCw className={`w-4 h-4 ${isAnalyzing ? 'animate-spin' : ''}`} />
               {isAnalyzing ? 'Analyzing Stream...' : 'Generate Responses Now'}
@@ -1219,7 +1583,23 @@ export default function App() {
           {topicGroups.length > 0 && (
             <div className="mb-8 bg-white/5 border border-white/10 rounded-2xl p-4">
               <div className="flex items-center justify-between text-xs text-white/50 mb-3">
-                <span className="font-medium">Timeline</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">Timeline</span>
+                  {!isAtLatest && (
+                    <button
+                      onClick={() => {
+                        setIsAtLatest(true);
+                        isAtLatestRef.current = true;
+                        setSliderValue(elapsedSeconds);
+                      }}
+                      className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 text-[11px] font-medium transition-colors flex items-center gap-1 cursor-pointer"
+                      title="Snap timeline to live stream"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
+                      Jump to Live
+                    </button>
+                  )}
+                </div>
                 <span className="font-mono">{formatTime(sliderValue)} / {formatTime(elapsedSeconds)}</span>
               </div>
               <input

@@ -1,6 +1,67 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { spawn } from "child_process";
 import dotenv from "dotenv";
 dotenv.config();
+
+export async function transcodeAudioToWav(base64Data: string): Promise<string | null> {
+  try {
+    const inputBuffer = Buffer.from(base64Data, "base64");
+    if (inputBuffer.length < 100) return null;
+
+    return await new Promise<string>((resolve) => {
+      let isResolved = false;
+      const ff = spawn("ffmpeg", [
+        "-i", "pipe:0",
+        "-t", "30",            // Max 30 seconds of audio
+        "-ar", "16000",        // 16kHz sample rate
+        "-ac", "1",            // Mono
+        "-c:a", "pcm_s16le",   // 16-bit PCM WAV
+        "-f", "wav",
+        "pipe:1"
+      ]);
+
+      const chunks: Buffer[] = [];
+      ff.stdout.on("data", (chunk) => chunks.push(chunk));
+      ff.stderr.on("data", () => {}); // silence stderr
+
+      // CRITICAL: Prevent unhandled EPIPE crashes if ffmpeg exits early
+      ff.stdin.on("error", () => {});
+
+      ff.on("error", (err) => {
+        if (!isResolved) {
+          isResolved = true;
+          console.warn("[Server Audio] Transcoder process notice:", err?.message || err);
+          resolve(null);
+        }
+      });
+
+      ff.on("close", (code) => {
+        if (!isResolved) {
+          isResolved = true;
+          if (code === 0 && chunks.length > 0) {
+            const wavBuffer = Buffer.concat(chunks);
+            resolve(wavBuffer.toString("base64"));
+          } else {
+            resolve(null);
+          }
+        }
+      });
+
+      try {
+        ff.stdin.write(inputBuffer);
+        ff.stdin.end();
+      } catch (_) {
+        if (!isResolved) {
+          isResolved = true;
+          resolve(null);
+        }
+      }
+    });
+  } catch (err: any) {
+    console.warn("[Server Audio] Transcoding notice:", err?.message || err);
+    return null;
+  }
+}
 
 // Create server-side shared Gemini client with required User-Agent header
 export function getApiKey(): string {
@@ -80,9 +141,9 @@ export async function generateWithFallback(requestConfig: any, preference: Gemin
       const request = { ...requestConfig, model };
       console.log(`[Server Waterfall] Attempting request with model: ${model}`);
       
-      // Prevent 503 retry stalls by bounding each model request to 9 seconds
+      // Allow up to 16 seconds per model attempt with ThinkingLevel.LOW
       const timeoutPromise = new Promise<never>((_, reject) => 
-        setTimeout(() => reject(new Error(`Model ${model} timed out after 9s`)), 9000)
+        setTimeout(() => reject(new Error(`Model ${model} timed out after 16s`)), 16000)
       );
 
       const response = await Promise.race([
@@ -379,6 +440,55 @@ Output a JSON object with:
   }
 }
 
+export function sanitizeContents(contents: any[]): any[] {
+  if (!Array.isArray(contents) || contents.length === 0) {
+    return [{ role: 'user', parts: [{ text: "Stream dialogue initialization" }] }];
+  }
+
+  const sanitized: any[] = [];
+  
+  for (const item of contents) {
+    if (!item || !item.role || !Array.isArray(item.parts) || item.parts.length === 0) {
+      continue;
+    }
+
+    const currentRole = item.role === 'model' ? 'model' : 'user';
+
+    if (sanitized.length === 0) {
+      // First message in multi-turn conversation must be 'user'
+      if (currentRole === 'user') {
+        sanitized.push({ role: 'user', parts: item.parts });
+      }
+    } else {
+      const lastRole = sanitized[sanitized.length - 1].role;
+      if (lastRole === currentRole) {
+        // Enforce strict alternation: merge consecutive user turns, keep latest model turn
+        if (currentRole === 'user') {
+          sanitized[sanitized.length - 1].parts = [
+            ...sanitized[sanitized.length - 1].parts,
+            ...item.parts
+          ];
+        } else {
+          sanitized[sanitized.length - 1] = { role: 'model', parts: item.parts };
+        }
+      } else {
+        sanitized.push({ role: currentRole, parts: item.parts });
+      }
+    }
+  }
+
+  if (sanitized.length === 0) {
+    sanitized.push({ role: 'user', parts: [{ text: "Stream dialogue update" }] });
+  }
+
+  // Ensure last message is 'user' before sending to Gemini
+  if (sanitized[sanitized.length - 1].role !== 'user') {
+    sanitized.push({ role: 'user', parts: [{ text: "Provide the next live dialogue update." }] });
+  }
+
+  return sanitized;
+}
+
 function generateFallbackTopics(
   style: SuggestionStyle,
   transcript: string,
@@ -397,26 +507,41 @@ function generateFallbackTopics(
     { text: "Honestly though, what's your take on that last move?" },
     { text: "Wait, hear me out — is that actually the meta right now?" },
     { text: "Chat was definitely reacting to that play." },
-    { text: "That setup felt smooth. Are you sticking with it?" }
+    { text: "That setup felt smooth. Are you sticking with it?" },
+    { text: "Quick read: are you feeling confident about this match?" },
+    { text: "Honestly, that was way closer than it looked." },
+    { text: "Wait, do you think chat saw that angle?" },
+    { text: "That looked clean. What's the plan for next round?" }
   ];
 
   const balancedPool = [
     { text: "I don't know, could definitely go either way." },
     { text: "Fair point. Where do you think we take this next?" },
     { text: "Wait, did you see how fast that shifted?" },
-    { text: "That reminds me of your earlier run. Huge difference." }
+    { text: "That reminds me of your earlier run. Huge difference." },
+    { text: "Honestly, that was an unexpected turn of events." },
+    { text: "How are we feeling about the pace so far?" },
+    { text: "Good timing on that. What's the main focus now?" },
+    { text: "That looked solid. Are we playing it safe or going aggressive?" }
   ];
 
   const abstractPool = [
     { text: "Completely off-topic, but what's your top moment this week?" },
     { text: "Hot take time: what's the most overrated thing right now?" },
     { text: "Quick pivot — if you had to change the stream goal right now?" },
-    { text: "Wait, imagine if the devs actually patched that tomorrow." }
+    { text: "Wait, imagine if the devs actually patched that tomorrow." },
+    { text: "Random question for chat: best comfort food while gaming?" },
+    { text: "If you could instantly master one mechanic, what is it?" },
+    { text: "Off-topic tangent: what game has the best soundtrack?" },
+    { text: "Quick pulse check on the stream vibe right now." }
   ];
 
   const pool = style === 'personalized' ? personalizedPool : style === 'abstract' ? abstractPool : balancedPool;
 
-  const topics = pool.slice(0, 3).map((item, idx) => {
+  // Shuffle pool so fallback topics don't repeat the exact same three
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+
+  const topics = shuffled.slice(0, 3).map((item, idx) => {
     if (idx === 0 && quote) {
       return { quote, text: item.text };
     }
@@ -494,25 +619,43 @@ CRITICAL REQUIREMENTS:
 Return JSON with 'summary' (string) and 'topics' (array of objects with optional 'quote' and required 'text').`;
 
   const newParts: any[] = [{ text: promptText }];
+  let hasValidAudio = false;
+
   if (audioBase64 && audioMimeType) {
-    const cleanMimeType = audioMimeType.split(';')[0];
-    newParts.push({
-      inlineData: {
-        data: audioBase64,
-        mimeType: cleanMimeType
-      }
-    });
+    const rawMime = audioMimeType.split(';')[0].toLowerCase();
+    let wavBase64: string | null = null;
+
+    if (rawMime === 'audio/wav' || rawMime === 'audio/x-wav') {
+      wavBase64 = audioBase64;
+    } else {
+      // Transcode WebM / Opus / other browser formats to 16kHz mono WAV for Gemini native audio ingest
+      wavBase64 = await transcodeAudioToWav(audioBase64);
+    }
+
+    if (wavBase64) {
+      hasValidAudio = true;
+      newParts.push({
+        inlineData: {
+          data: wavBase64,
+          mimeType: 'audio/wav'
+        }
+      });
+    } else {
+      console.warn("[Server] Audio could not be transcoded to WAV, proceeding with transcript context.");
+    }
   }
 
   const newUserContent = { role: 'user', parts: newParts };
-  const currentContents = [...history, newUserContent];
+  const currentContents = sanitizeContents([...history, newUserContent]);
+
+  let response: any = null;
 
   try {
-    const response = await generateWithFallback({
+    response = await generateWithFallback({
       contents: currentContents,
       config: {
         responseMimeType: "application/json",
-        temperature: 0.9,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -533,35 +676,57 @@ Return JSON with 'summary' (string) and 'topics' (array of objects with optional
         }
       }
     }, modelPreference);
-
-    let parsed: any = { topics: [] };
-    const text = response.text;
-    if (text) {
-      try {
-        parsed = JSON.parse(text);
-      } catch (e) {
-        console.warn("Failed to parse topics JSON:", e);
-      }
+  } catch (error: any) {
+    if (isApiKeyError(error)) {
+      throw error;
     }
 
-    return {
-      summary: parsed.summary,
-      topics: parsed.topics || [],
-      userContentForHistory: { role: 'user', parts: [{ text: promptText }] },
-      modelContentForHistory: response.candidates?.[0]?.content
-    };
-  } catch (error: any) {
-    console.warn("[Server] GetTopics API fallback activated:", error?.message || error);
-    const fallback = generateFallbackTopics(style, transcript, channelDeliveryStyle);
-    const keyError = isApiKeyError(error);
+    // Resilience: If multimodal request with audio failed or timed out, retry immediately with prompt & transcript only
+    if (hasValidAudio) {
+      console.warn("[Server] Multimodal audio request notice, immediately retrying with stream context:", error?.message || error);
+      const textOnlyContent = { role: 'user', parts: [{ text: promptText }] };
+      const fallbackContents = sanitizeContents([...history, textOnlyContent]);
+      try {
+        response = await generateWithFallback({
+          contents: fallbackContents,
+          config: {
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                summary: { type: Type.STRING },
+                topics: {
+                  type: Type.ARRAY,
+                  items: { 
+                    type: Type.OBJECT,
+                    properties: {
+                      quote: { type: Type.STRING },
+                      text: { type: Type.STRING }
+                    },
+                    required: ["text"]
+                  }
+                }
+              },
+              required: ["summary", "topics"]
+            }
+          }
+        }, modelPreference);
+      } catch (retryError: any) {
+        if (isApiKeyError(retryError)) throw retryError;
+        console.warn("[Server] Text retry also encountered notice:", retryError?.message || retryError);
+      }
+    } else {
+      console.warn("[Server] Dialogue generation encountered notice:", error?.message || error);
+    }
+  }
 
+  if (!response) {
+    console.warn("[Server] Activating safe fallback topics.");
+    const fallback = generateFallbackTopics(style, transcript, channelDeliveryStyle);
     return {
       summary: fallback.summary,
       topics: fallback.topics,
-      apiKeyError: keyError ? {
-        type: 'invalid',
-        message: error?.message || 'Gemini API key is invalid or rejected.'
-      } : undefined,
       userContentForHistory: { role: 'user', parts: [{ text: promptText }] },
       modelContentForHistory: {
         role: "model",
@@ -569,4 +734,36 @@ Return JSON with 'summary' (string) and 'topics' (array of objects with optional
       }
     };
   }
+
+  let parsed: any = { topics: [] };
+  const text = response.text;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      console.warn("Failed to parse topics JSON:", e);
+    }
+  }
+
+  // Safety net: if model returned empty topics array or failed schema, populate with fallback
+  if (!Array.isArray(parsed.topics) || parsed.topics.length === 0) {
+    console.warn("[Server] Model returned 0 topics, generating co-host fallback topics.");
+    const fallback = generateFallbackTopics(style, transcript, channelDeliveryStyle);
+    parsed.topics = fallback.topics;
+    if (!parsed.summary) {
+      parsed.summary = fallback.summary;
+    }
+  }
+
+  const modelContent = response.candidates?.[0]?.content || {
+    role: "model",
+    parts: [{ text: JSON.stringify(parsed) }]
+  };
+
+  return {
+    summary: parsed.summary,
+    topics: parsed.topics || [],
+    userContentForHistory: { role: 'user', parts: [{ text: promptText }] },
+    modelContentForHistory: modelContent
+  };
 }
